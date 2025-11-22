@@ -1,0 +1,2049 @@
+<#
+.SYNOPSIS
+    Una suite de gestión de respaldos de nivel profesional para archivar, cifrar (AES-256), reubicar perfiles y automatizar la protección de datos.
+
+.DESCRIPTION
+    ProfileGuard v1.0 es una solución de protección de datos integral que unifica múltiples vectores de seguridad en una sola herramienta:
+
+    1.  [Respaldo Avanzado] Motor basado en 7-Zip para archivos versionados (Full, Incremental, Diferencial) con cifrado militar AES-256 y seguimiento mediante 'manifest.json'.
+    2.  [Sincronización] Replicación de alta velocidad (Robocopy) con modos Espejo/Copia y validación de integridad por Hash SHA-256.
+    3.  [Gestión de Perfil] Herramienta para reubicar carpetas de usuario (Documentos, Escritorio, etc.) modificando el Registro de Windows de forma segura.
+    4.  [Automatización] Programador de tareas con seguridad DPAPI (credenciales cifradas) y ejecución con privilegios elevados.
+
+    El módulo es autosuficiente (instala dependencias vía Winget), cuenta con autocuración de manifiestos corruptos y sistema de actualización automática desde GitHub.
+
+.AUTHOR
+    SOFTMAXTER
+
+.VERSION
+    1.0.0
+#>
+
+$script:Version = "1.0.0"
+
+# --- INICIO DEL MODULO DE AUTO-ACTUALIZACION ---
+
+function Invoke-FullRepoUpdater {
+    # --- CONFIGURACION ---
+    $repoUser = "SOFTMAXTER"; $repoName = "ProfileGuard"; $repoBranch = "main"
+    $versionUrl = "https://raw.githubusercontent.com/$repoUser/$repoName/$repoBranch/version.txt"
+    $zipUrl = "https://github.com/$repoUser/$repoName/archive/refs/heads/$repoBranch.zip"
+    
+    try {
+        # Se intenta la operacion de red con un timeout corto para no retrasar el script si no hay conexion.
+        $remoteVersionStr = (Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -Headers @{"Cache-Control"="no-cache"}).Content.Trim()
+
+        if ([System.Version]$remoteVersionStr -gt [System.Version]$script:Version) {
+            # Solo si se encuentra una actualizacion, se le notifica al usuario.
+            Write-Host "¡Nueva version encontrada! Local: v$($script:Version) | Remota: v$remoteVersionStr" -ForegroundColor Green
+            $confirmation = Read-Host "¿Deseas descargar e instalar la actualizacion ahora? (S/N)"
+            if ($confirmation.ToUpper() -eq 'S') {
+                Write-Warning "El actualizador se ejecutara en una nueva ventana. NO LA CIERRES."
+                $tempDir = Join-Path $env:TEMP "ProfileGuardUpdater"
+                if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force }
+                New-Item -Path $tempDir -ItemType Directory | Out-Null
+                $updaterScriptPath = Join-Path $tempDir "updater.ps1"
+                $installPath = (Split-Path -Path $PSScriptRoot -Parent)
+                $batchPath = Join-Path $installPath "Run.bat"
+
+                $updaterScriptContent = @"
+param(`$parentPID)
+
+`$ErrorActionPreference = 'Stop'
+`$Host.UI.RawUI.WindowTitle = 'PROCESO DE ACTUALIZACION DE ProfileGuard - NO CERRAR'
+try {
+    `$tempDir_updater = "$tempDir"
+    `$tempZip_updater = Join-Path "`$tempDir_updater" "update.zip"
+    `$tempExtract_updater = Join-Path "`$tempDir_updater" "extracted"
+
+    Write-Host "[PASO 1/6] Descargando la nueva version..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri "$zipUrl" -OutFile "`$tempZip_updater"
+
+    Write-Host "[PASO 2/6] Descomprimiendo archivos..." -ForegroundColor Yellow
+    Expand-Archive -Path "`$tempZip_updater" -DestinationPath "`$tempExtract_updater" -Force
+    `$updateSourcePath = (Get-ChildItem -Path "`$tempExtract_updater" -Directory).FullName
+
+    Write-Host "[PASO 3/6] Esperando a que el proceso principal de ProfileGuard finalice..." -ForegroundColor Yellow
+    try {
+        # Espera a que el PID que le pasamos termine antes de continuar
+        Get-Process -Id `$parentPID -ErrorAction Stop | Wait-Process -ErrorAction Stop
+    } catch {
+        # Si el proceso ya cerro (fue muy rapido), no es un error.
+        Write-Host "   - El proceso principal ya ha finalizado." -ForegroundColor Gray
+    }
+    # --- FIN DE LA MODIFICACIoN ---
+
+    Write-Host "[PASO 4/6] Eliminando archivos antiguos (excluyendo datos de usuario)..." -ForegroundColor Yellow # <--- MODIFICADO: Paso 4/6
+    `$itemsToRemove = Get-ChildItem -Path "$installPath" -Exclude "Logs", "Tools", "BackupScripts"
+    if (`$null -ne `$itemsToRemove) { Remove-Item -Path `$itemsToRemove.FullName -Recurse -Force }
+
+    Write-Host "[PASO 5/6] Instalando nuevos archivos..." -ForegroundColor Yellow # <--- MODIFICADO: Paso 5/6
+    Move-Item -Path "`$updateSourcePath\*" -Destination "$installPath" -Force
+    Get-ChildItem -Path "$installPath" -Recurse | Unblock-File
+
+    Write-Host "[PASO 6/6] ¡Actualizacion completada! Reiniciando la suite en 5 segundos..." -ForegroundColor Green # <--- MODIFICADO: Paso 6/6
+    Start-Sleep -Seconds 5
+    
+    Remove-Item -Path "`$tempDir_updater" -Recurse -Force
+    Start-Process -FilePath "$batchPath"
+}
+catch {
+    Write-Error "¡LA ACTUALIZACION HA FALLADO!"
+    Write-Error `$_
+    Read-Host "El proceso ha fallado. Presiona Enter para cerrar esta ventana."
+}
+"@
+                Set-Content -Path $updaterScriptPath -Value $updaterScriptContent -Encoding utf8
+                
+                # --- MODIFICADO: Se pasa el $PID actual como argumento al nuevo proceso ---
+                $launchArgs = "/c start `"PROCESO DE ACTUALIZACION DE ProfileGuard`" powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterScriptPath`" -parentPID $PID"
+                
+                Start-Process cmd.exe -ArgumentList $launchArgs -WindowStyle Hidden
+                exit # El script principal se cierra inmediatamente
+            } else {
+				Write-Host "Actualizacion omitida por el usuario." -ForegroundColor Yellow; Start-Sleep -Seconds 1
+        	}
+        } 
+    }
+    catch {
+		# Silencioso si no hay conexion, no es un error.
+        return
+    }
+}
+
+# Ejecutar el actualizador DESPUES de definir la version
+Invoke-FullRepoUpdater
+
+function Write-Log {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('INFO', 'ACTION', 'WARN', 'ERROR')]
+        [string]$LogLevel,
+
+        [Parameter(Mandatory=$true)]
+        [string]$Message
+    )
+    
+    try {
+        $parentDir = Split-Path -Parent $PSScriptRoot
+        $logDir = Join-Path -Path $parentDir -ChildPath "Logs"
+        if (-not (Test-Path $logDir)) {
+            New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+        }
+        $logFile = Join-Path -Path $logDir -ChildPath "Registro.log"
+        
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        "[$timestamp] [$LogLevel] - $Message" | Out-File -FilePath $logFile -Append -Encoding utf8
+    }
+    catch {
+        Write-Warning "No se pudo escribir en el archivo de log: $_"
+    }
+}
+
+# --- Verificacion de Privilegios de Administrador ---
+if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning "Este script necesita ser ejecutado como Administrador."
+    Write-Host "Por favor, cierra esta ventana, haz clic derecho en el archivo del script y selecciona 'Ejecutar como Administrador'."
+    Read-Host "Presiona Enter para salir."
+    exit
+}
+
+Write-Log -LogLevel INFO -Message "================================================="
+Write-Log -LogLevel INFO -Message "ProfileGuard v$($script:Version) iniciado en modo Administrador."
+
+function Invoke-ExplorerRestart {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+
+    Write-Host "`n[+] Reiniciando el Explorador de Windows para aplicar los cambios visuales..." -ForegroundColor Yellow
+    Write-Log -LogLevel ACTION -Message "Reiniciando el Explorador de Windows a peticion del usuario."
+
+    if ($PSCmdlet.ShouldProcess("explorer.exe", "Reiniciar")) {
+        try {
+            # Obtener todos los procesos del Explorador (puede haber mas de uno)
+            $explorerProcesses = Get-Process -Name explorer -ErrorAction Stop
+            
+            # Detener los procesos
+            $explorerProcesses | Stop-Process -Force
+            Write-Host "   - Proceso(s) detenido(s)." -ForegroundColor Gray
+            
+            # Esperar a que terminen
+            $explorerProcesses.WaitForExit()
+            
+            # Iniciar un nuevo proceso del explorador
+            Start-Process "explorer.exe"
+            Write-Host "   - Proceso iniciado." -ForegroundColor Gray
+            Write-Host "[OK] El Explorador de Windows se ha reiniciado." -ForegroundColor Green
+        }
+        catch {
+            Write-Error "No se pudo reiniciar el Explorador de Windows. Es posible que deba reiniciar la sesion manualmente. Error: $($_.Exception.Message)"
+            Write-Log -LogLevel ERROR -Message "Fallo el reinicio del Explorador de Windows. Motivo: $($_.Exception.Message)"
+            # Intento de emergencia para iniciar explorer por si se quedo detenido
+            Start-Process "explorer.exe" -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+# --- FUNCION 2: El NUEVO Motor de Creacion de Respaldos (Basado en mi logica) ---
+function Invoke-BackupCreation {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    
+    Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Iniciando creacion de respaldo manual."
+
+    # --- 1. Verificar si 7-Zip esta disponible ---
+    if (-not (Ensure-7ZipIsInstalled)) {
+        Read-Host "`nPresiona Enter para volver..."
+        return
+    }
+
+    # --- 2. Obtener Origen y Destino ---
+    Write-Host "`n[+] Paso 1: Selecciona la CARPETA de Origen que deseas respaldar." -ForegroundColor Yellow
+    $sourcePath = Select-PathDialog -DialogType 'Folder' -Title "Paso 1: Elige la Carpeta de Origen del Respaldo"
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+        Write-Warning "No se selecciono una carpeta de origen. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+    
+    Write-Host "`n[+] Paso 2: Selecciona la CARPETA de Destino donde se guardara el respaldo." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Paso 2: Elige la Carpeta de Destino del Respaldo"
+    if ([string]::IsNullOrWhiteSpace($destinationPath)) {
+        Write-Warning "No se selecciono una carpeta de destino. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+
+    # --- 3. Seleccionar Tipo de Respaldo ---
+    $backupType = ''
+    while ($backupType -notin @('1', '2', '3')) {
+        Clear-Host
+        Write-Host "[3/5] Selecciona el tipo de respaldo:"
+        Write-Host "   [1] Respaldo Completo (Full)" -ForegroundColor Yellow
+        Write-Host "   [2] Respaldo Incremental (Incremental)"
+        Write-Host "   [3] Respaldo Diferencial (Differential)"
+        $backupType = Read-Host "Elige una opcion (1-3)"
+    }
+    $Type = switch($backupType) { '1' { 'Full' } '2' { 'Incremental' } '3' { 'Differential' } }
+    
+    # --- 4. Opcion de Cifrado ---
+    Write-Host "`n[4/5] ¿Deseas cifrar este respaldo con AES-256?" -ForegroundColor Yellow
+    Write-Warning "Si pierdes la contrasena, NO PODRAS RECUPERAR tus archivos."
+    $encryptChoice = Read-Host "(S/N)"
+    
+    $securePassword = $null
+    $isEncrypted = $false
+    $passwordTextForFile = $null # Solo para guardar la contraseña generada en .txt
+
+    if ($encryptChoice.ToUpper() -eq 'S') {
+        $isEncrypted = $true
+        Write-Host "   [1] Introducir manualmente una contrasena segura"
+        Write-Host "   [2] Generar una contrasena aleatoria segura (recomendado)"
+        $passMethod = Read-Host "Elige una opcion (1-2)"
+        
+        if ($passMethod -eq '1') {
+            $securePassword = Read-Host "Introduce una contrasena segura" -AsSecureString
+        } else {
+            $passwordTextForFile = Generate-SecurePassword
+            $securePassword = ConvertTo-SecureString $passwordTextForFile -AsPlainText -Force
+            Write-Host "`n[+] Se ha generado una contrasena segura aleatoria." -ForegroundColor Green
+            Write-Warning "IMPORTANTE: Se guardara en un archivo .txt. Guardala en un lugar seguro."
+            Write-Host "`nCONTRASENA GENERADA: $passwordTextForFile" -ForegroundColor Magenta
+            Read-Host "Presiona Enter para confirmar que has visto la contrasena..."
+        }
+    }
+    
+    # --- 5. LLAMAR AL MOTOR CENTRALIZADO ---
+    Write-Host "`n[5/5] Ejecutando motor de respaldo... Esto puede tardar." -ForegroundColor Yellow
+    
+    $success = Invoke-ProfileGuardBackupEngine -SourcePath $sourcePath -DestinationPath $destinationPath -BackupType $Type -IsEncrypted $isEncrypted -SecurePassword $securePassword -LogContext "MANUAL" -WarningAction SilentlyContinue
+    
+    # --- 6. Reporte y Limpieza de Contraseña ---
+    if ($success) {
+        Write-Host "`n[EXITO] Respaldo manual completado exitosamente." -ForegroundColor Green
+        
+        if ($isEncrypted -and $passMethod -ne '1') {
+            try {
+                $passwordPath = Join-Path $destinationPath "Password_Generada_$(Get-Date -Format 'yyyyMMdd').txt"
+                Set-Content -Path $passwordPath -Value $passwordTextForFile -Encoding utf8
+                Write-Warning "¡IMPORTANTE! La contrasena se ha guardado en: '$passwordPath'"
+                Write-Warning "Mueva este archivo de contrasena a un lugar seguro"
+            } catch {
+                Write-Error "No se pudo guardar el archivo de contrasena en '$passwordPath'."
+                Write-Error "TU CONTRASENA ES: $passwordTextForFile"
+                Write-Error "¡GUARDALA MANUALMENTE AHORA!"
+                Read-Host "Presiona Enter DESPUES de guardar la contrasena..."
+            }
+        }
+    } else {
+        Write-Error "FALLO: El motor de respaldo reporto un error. Revisa el log para mas detalles."
+    }
+    
+    # Limpieza final de variables sensibles
+    $securePassword = $null
+    $passwordTextForFile = $null
+    [GC]::Collect()
+    Read-Host "`nPresiona Enter para volver..."
+}
+
+# --- FUNCION "MOTOR" DE RESPALDO CENTRALIZADA ---
+function Invoke-ProfileGuardBackupEngine {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SourcePath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$DestinationPath,
+        
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('Full', 'Incremental', 'Differential')]
+        [string]$BackupType,
+
+        [Parameter(Mandatory=$true)]
+        [bool]$IsEncrypted,
+
+        # Acepta un string de contraseña (para tareas automaticas) o SecureString (para manual)
+        [Parameter(Mandatory=$false, ParameterSetName = 'SecureStringPassword')]
+        [System.Security.SecureString]$SecurePassword,
+
+        [Parameter(Mandatory=$false, ParameterSetName = 'CredentialPassword')]
+        [System.Management.Automation.PSCredential]$Credential,
+
+        [Parameter(Mandatory=$false, ParameterSetName = 'StringPassword')]
+        [string]$PlainTextPassword,
+
+        [Parameter(Mandatory=$false)]
+        [string]$LogContext = "ENGINE" # Para identificar en el log de donde vino la llamada
+    )
+
+	$Password = $null
+    switch ($PsCmdlet.ParameterSetName) {
+        'SecureStringPassword' { $Password = $SecurePassword }
+        'CredentialPassword'   { $Password = $Credential }
+        'StringPassword'       { $Password = $PlainTextPassword }
+    }
+
+    Write-Log -LogLevel INFO -Message "[$LogContext] Iniciando motor de respaldo 7-Zip."
+    
+    # --- 1. Verificar si 7-Zip esta disponible ---
+    if (-not (Ensure-7ZipIsInstalled)) {
+        Write-Log -LogLevel ERROR -Message "[$LogContext] 7-Zip no esta instalado o no se pudo instalar. Abortando."
+        return $false
+    }
+
+    # --- 2. Cargar Manifiesto de Respaldo ---
+    $manifest = Get-BackupManifest -DestinationPath $DestinationPath
+    $lastFullBackup = $manifest.Backups | Where-Object { $_.Type -eq 'Full' -and $_.Source -eq $SourcePath } | Sort-Object Timestamp -Descending | Select-Object -First 1
+    $lastAnyBackup = $manifest.Backups | Where-Object { $_.Source -eq $SourcePath } | Sort-Object Timestamp -Descending | Select-Object -First 1
+
+    # --- 3. Logica de Tipos de Respaldo y Fechas ---
+    $referenceDate = [datetime]::MinValue
+    $archiveNameSuffix = "_FULL"
+    $currentBackupType = $BackupType
+
+    if ($currentBackupType -eq 'Incremental' -or $currentBackupType -eq 'Differential') {
+        if (-not $lastFullBackup) {
+            Write-Log -LogLevel WARN -Message "[$LogContext] Se solicito respaldo '$currentBackupType' pero no hay 'Full'. Forzando a 'Full'."
+            $currentBackupType = 'Full'
+        } else {
+            if ($currentBackupType -eq 'Incremental') {
+                $referenceDate = [datetime]::Parse($lastAnyBackup.Timestamp)
+                $archiveNameSuffix = "_INC"
+            } else { # Differential
+                $referenceDate = [datetime]::Parse($lastFullBackup.Timestamp)
+                $archiveNameSuffix = "_DIFF"
+            }
+        }
+    }
+    Write-Log -LogLevel INFO -Message "[$LogContext] Modo de respaldo: '$currentBackupType'. Buscando archivos modificados desde $referenceDate."
+
+    # --- 4. Encontrar archivos a respaldar ---
+    $filesToBackup = Get-ChildItem -Path $SourcePath -Recurse -File | Where-Object { $_.LastWriteTime -gt $referenceDate }
+    
+    if ($filesToBackup.Count -eq 0) {
+        Write-Log -LogLevel INFO -Message "[$LogContext] No se encontraron archivos nuevos o modificados. Respaldo omitido."
+        return $true # Se considera un "exito"
+    }
+    Write-Log -LogLevel INFO -Message "[$LogContext] Se respaldaran $($filesToBackup.Count) archivos."
+
+    # --- 5. Preparar argumentos de Cifrado ---
+    $switch_Password = $null
+    $switch_HeaderEncrypt = $null
+    $passwordPlainText = $null # Solo para 7z, se limpia al final
+
+    if ($IsEncrypted) {
+        if (-not $Password) {
+            Write-Log -LogLevel ERROR -Message "[$LogContext] Se solicito cifrado pero no se proporciono contrasena. Abortando."
+            return $false
+        }
+        
+        $switch_HeaderEncrypt = "-mhe=on"
+        
+        # Convertir la contraseña a texto plano para 7z.exe
+        if ($Password -is [System.Security.SecureString]) {
+            $passwordPlainText = ($Password | ConvertFrom-SecureString)
+        } elseif ($Password -is [System.Management.Automation.PSCredential]) {
+            $passwordPlainText = $Password.GetNetworkCredential().Password
+        } else {
+            $passwordPlainText = $Password.ToString()
+        }
+        
+        $switch_Password = "-p$($passwordPlainText)"
+    }
+    
+    # --- 6. Preparar lista de archivos para 7-Zip ---
+    $tempListFile = Join-Path $env:TEMP "backup_list_$(New-Guid).txt"
+    $filesToBackup | ForEach-Object { $_.FullName.Substring($SourcePath.Length + 1) } | Set-Content -Path $tempListFile -Encoding utf8
+
+    # --- 7. Construir y Ejecutar Comando 7-Zip ---
+    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $archiveName = "Backup_$(Split-Path $SourcePath -Leaf)_$timestamp$archiveNameSuffix.7z"
+    $archivePath = Join-Path $DestinationPath $archiveName
+    
+    $7zArgs = @(
+        "a"                     # Añadir a un archivo
+        "`"$archivePath`""      # Archivo de salida
+        "@`"$tempListFile`""    # Archivo de lista
+        "-t7z"                  # Formato 7z
+        "-mx=5"                 # Nivel 5 (Rapido)
+    )
+    if ($IsEncrypted) {
+        $7zArgs += $switch_HeaderEncrypt
+        $7zArgs += $switch_Password
+    }
+
+    if ($PSCmdlet.ShouldProcess($archivePath, "Crear Respaldo ($currentBackupType)")) {
+        Write-Log -LogLevel ACTION -Message "[$LogContext] Ejecutando 7z.exe $archivePath"
+        
+        Push-Location $SourcePath
+        $process = Start-Process "7z.exe" -ArgumentList $7zArgs -Wait -NoNewWindow -PassThru
+        Pop-Location
+
+        # --- 8. Verificacion y Reporte ---
+        if ($process.ExitCode -eq 0) {
+            Write-Log -LogLevel ACTION -Message "[$LogContext] Exito al crear '$archiveName'."
+
+            # --- 9. Actualizar Manifiesto (Metadatos) ---
+            $newBackupEntry = [PSCustomObject]@{
+                File = $archiveName
+                Type = $currentBackupType
+                Timestamp = (Get-Date).ToString("o")
+                Source = $SourcePath
+                FileCount = $filesToBackup.Count
+                IsEncrypted = $IsEncrypted
+                Parent = if ($currentBackupType -eq 'Full') { $null } elseif ($currentBackupType -eq 'Incremental') { $lastAnyBackup.File } else { $lastFullBackup.File }
+            }
+            $manifest.Backups.Add($newBackupEntry)
+            Update-BackupManifest -DestinationPath $DestinationPath -Manifest $manifest
+        
+        } else {
+            Write-Log -LogLevel ERROR -Message "[$LogContext] FALLO: 7-Zip finalizo con codigo ($($process.ExitCode))."
+            # Limpieza de archivo fallido
+            Remove-Item $archivePath -ErrorAction SilentlyContinue
+            return $false
+        }
+    }
+    
+    # Limpieza final
+    $passwordPlainText = $null
+    $switch_Password = $null
+    [GC]::Collect()
+    Remove-Item $tempListFile -ErrorAction SilentlyContinue
+    
+    return $true # Exito
+}
+
+# --- FUNCION 3: Configurar Respaldo Automatico ---
+function Configure-AutoBackupSchedule {
+    param()
+    
+    Write-Host "`n[+] Configurar Respaldo Automatico Programado" -ForegroundColor Yellow
+    Write-Host "-------------------------------------------------------"
+    
+    # --- 1. Origen, Destino ---
+    Write-Host "`n[1/5] Selecciona la CARPETA de Origen." -ForegroundColor Yellow
+    $sourcePath = Select-PathDialog -DialogType 'Folder' -Title "Origen"
+    if ([string]::IsNullOrWhiteSpace($sourcePath)) { return }
+    
+    Write-Host "`n[2/5] Selecciona la CARPETA de Destino." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Destino"
+    if ([string]::IsNullOrWhiteSpace($destinationPath)) { return }
+    
+    # --- 2. Frecuencia ---
+    Write-Host "`n[3/5] Configura la frecuencia:" -ForegroundColor Yellow
+    Write-Host "   [1] Diario  [2] Semanal"
+    $frequencyChoice = Read-Host "Elige (1-2)"
+    
+    $schedule = @{ Frequency = 'Daily'; Time = '24:00'; DayOfWeek = $null }
+    if ($frequencyChoice -eq '2') {
+        $schedule.Frequency = 'Weekly'
+        $dayChoice = Read-Host "Dia (1=Lunes ... 7=Domingo)"
+        $schedule.DayOfWeek = switch($dayChoice) {
+            '1' { 'Monday' } '2' { 'Tuesday' } '3' { 'Wednesday' } '4' { 'Thursday' }
+            '5' { 'Friday' } '6' { 'Saturday' } '7' { 'Sunday' } default { 'Sunday' }
+        }
+    }
+    
+    $validTime = $false
+    while (-not $validTime) {
+        $timeInput = Read-Host "Hora (HH:mm)"
+        if ($timeInput -match '^(?:[01]\d|2[0-3]):[0-5]\d$') { $schedule.Time = $timeInput; $validTime = $true }
+    }
+
+    # --- 3. Tipo y Cifrado ---
+    Write-Host "`n[4/5] Tipo de respaldo:" -ForegroundColor Yellow
+    Write-Host "   [1] Incremental  [2] Diferencial  [3] Completo"
+    $backupTypeChoice = Read-Host "Elige (1-3)"
+    $Type = switch($backupTypeChoice) { '1' { 'Incremental' } '2' { 'Differential' } '3' { 'Full' } default { 'Incremental' } }
+
+    Write-Host "`n[5/5] ¿Cifrar respaldo?" -ForegroundColor Yellow
+    $encryptChoice = Read-Host "(S/N)"
+    $isEncrypted = $false
+    $password = ""
+    
+    # --- SEGURIDAD: Generacion de credencial cifrada ---
+    $taskName = "Backup_$(Split-Path $sourcePath -Leaf | ForEach-Object { $_ -replace '[^a-zA-Z0-9]', '' })"
+    $parentDir = Split-Path -Parent $PSScriptRoot
+    $scriptsDir = Join-Path -Path $parentDir -ChildPath "BackupScripts"
+    if (-not (Test-Path $scriptsDir)) { New-Item -Path $scriptsDir -ItemType Directory -Force | Out-Null }
+    
+    if ($encryptChoice.ToUpper() -eq 'S') {
+        $isEncrypted = $true
+        Write-Warning "Se generara una contrasena y se guardara CIFRADA (DPAPI) en disco."
+        Write-Warning "Solo ESTE usuario en ESTA PC podra ejecutar el respaldo."
+        $password = Generate-SecurePassword
+        
+        # Guardar credencial cifrada
+        $secureString = ConvertTo-SecureString $password -AsPlainText -Force
+        $encryptedContent = $secureString | ConvertFrom-SecureString
+        $credFilePath = Join-Path $scriptsDir "$taskName.cred"
+        Set-Content -Path $credFilePath -Value $encryptedContent
+        
+        Write-Host "Contrasena generada: $password" -ForegroundColor Magenta
+        Write-Host "Archivo de credencial segura creado en: $credFilePath" -ForegroundColor Gray
+        Read-Host "Anota la contrasena y presiona Enter..."
+    }
+
+    # --- 4. Generar script (Actualizado para leer .cred) ---
+    $backupScriptPath = Join-Path -Path $scriptsDir -ChildPath "$taskName.ps1"
+    $mainScriptFullPath = $PSScriptRoot
+    
+    $scriptContent = @"
+`$ErrorActionPreference = 'Stop'
+
+# --- PARAMETROS ---
+`$sourcePath = '$sourcePath'
+`$destinationPath = '$destinationPath'
+`$backupType = '$Type'
+`$isEncrypted = [bool]'$isEncrypted'
+`$mainScriptToImport = Join-Path '$mainScriptFullPath' 'ProfileGuard.ps1'
+
+# --- SEGURIDAD DPAPI ---
+`$passwordArg = `$null
+`$ptr = [System.IntPtr]::Zero  # Inicializamos el puntero en cero
+
+if (`$isEncrypted) {
+    `$credFile = Join-Path "`$PSScriptRoot" '$taskName.cred'
+    if (Test-Path `$credFile) {
+        try {
+            `$encryptedData = Get-Content `$credFile -Raw
+            # Desciframos usando la identidad del usuario actual (DPAPI)
+            `$secureString = `$encryptedData | ConvertTo-SecureString
+            
+            # Convertimos a texto plano en memoria no administrada (BSTR)
+            `$ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(`$secureString)
+            `$passwordArg = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(`$ptr)
+        } catch {
+             Throw "Error al descifrar la credencial: `$_"
+        }
+    } else {
+        Throw "No se encontro el archivo de credencial: `$credFile"
+    }
+}
+
+`$logDir = Join-Path `$env:LOCALAPPDATA 'ProfileGuard_Logs'
+`$logFile = Join-Path `$logDir 'Backup_Auto_Log.txt'
+if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }
+
+function Write-TaskLog { param([string]`$Message) "`$(Get-Date) - `$Message" | Out-File -FilePath `$logFile -Append -Encoding utf8 }
+Write-TaskLog "--- Iniciando Respaldo Automatico '$taskName' ---"
+
+try {
+    Write-TaskLog "INFO: Importando motor..."
+    
+    # IMPORTANTE: Esto requiere que ProfileGuard.ps1 tenga el bloqueo de menú (if MyInvocation...)
+    . "`$mainScriptToImport"
+    
+    # Redefinimos Write-Log para que apunte al log de la tarea y no a consola
+    function Write-Log { [CmdletBinding()] param([string]`$LogLevel, [string]`$Message) Write-TaskLog "[\$LogLevel] \$Message" }
+
+    Write-TaskLog "INFO: Ejecutando motor..."
+    `$success = Invoke-ProfileGuardBackupEngine -SourcePath `$sourcePath -DestinationPath `$destinationPath -BackupType `$backupType -IsEncrypted `$isEncrypted -PlainTextPassword `$passwordArg -LogContext "AUTO: $taskName"
+    
+    if (`$success) { Write-TaskLog "EXITO." } else { Write-TaskLog "FALLO." }
+
+} catch {
+    Write-TaskLog "ERROR CRITICO: `$( `$_.Exception.Message)"
+} finally {
+    # --- LIMPIEZA DE SEGURIDAD ---
+    # Limpiamos la contraseña de la memoria RAM inmediatamente
+    if (`$ptr -ne [System.IntPtr]::Zero) {
+        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr)
+        `$ptr = [System.IntPtr]::Zero
+    }
+    `$passwordArg = `$null
+    `$secureString = `$null
+    
+    [GC]::Collect()
+    Write-TaskLog "--- Fin ---`n"
+}
+"@
+    
+    Set-Content -Path $backupScriptPath -Value $scriptContent -Encoding UTF8
+    
+    # --- 5. Crear la Tarea Programada ---
+    try {
+        Write-Host "`n[+] Creando tarea programada..." -ForegroundColor Yellow
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$backupScriptPath`""
+        
+        $trigger = $null
+        if ($schedule.Frequency -eq 'Daily') { $trigger = New-ScheduledTaskTrigger -Daily -At $schedule.Time }
+        else { $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $schedule.DayOfWeek -At $schedule.Time }
+
+        $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Highest
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -StartWhenAvailable        
+        Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+        
+        Write-Host "`n[OK] Tarea creada." -ForegroundColor Green
+        if ($isEncrypted) { Write-Warning "Archivo .cred generado. NO LO BORRES o la tarea fallara." }
+        
+    } catch {
+        Write-Error "Error al crear tarea: $($_.Exception.Message)"
+    }
+    
+    $password = $null
+    [GC]::Collect()
+    Read-Host "`nPresiona Enter..."
+}
+
+# --- FUNCION 4: Administrar Respaldos ---
+function Manage-ExistingBackups {
+    param()
+    
+    Write-Host "`n[+] Administrar Respaldos Existentes" -ForegroundColor Cyan
+    Write-Host "-------------------------------------------------------"
+    
+    # --- 1. Seleccionar la carpeta de destino que contiene los respaldos ---
+    Write-Host "`n[+] Por favor, selecciona la CARPETA de Destino que contiene el manifiesto ('manifest.json')." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de Destino de tus Respaldos"
+    if ([string]::IsNullOrWhiteSpace($destinationPath)) {
+        Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+    
+    # --- 2. Cargar Manifiesto ---
+    $manifest = Get-BackupManifest -DestinationPath $destinationPath
+    if ($manifest.Backups.Count -eq 0) {
+        Write-Host "`n[INFO] No se encontraron respaldos registrados en el manifiesto de esta ubicacion." -ForegroundColor Yellow
+        Read-Host "`nPresiona Enter para continuar..."
+        return
+    }
+    
+    $allBackups = @($manifest.Backups | ForEach-Object {
+        # Agregamos propiedades (sin emitir aun)
+        $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -Force
+        
+        $status = "Available"
+        if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
+        $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -Force
+        
+        # Emitimos el objeto UNA SOLA VEZ
+        $_ 
+    } | Sort-Object Timestamp -Descending)
+
+    # --- 3. Bucle de Gestion ---
+    $choice = ""
+    while ($choice.ToUpper() -ne "V") {
+        Clear-Host
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        Write-Host "         Administrar Respaldos en: $destinationPath    " -ForegroundColor Cyan
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        
+        Write-Host "`nLista de respaldos registrados:" -ForegroundColor Yellow
+        
+        for ($i = 0; $i -lt $allBackups.Count; $i++) {
+            $backup = $allBackups[$i]
+            $statusMarker = if ($backup.Selected) { "[X]" } else { "[ ]" }
+            $statusColor = if ($backup.Status -eq "Available") { "Green" } else { "Red" }
+            $encryptMarker = if ($backup.IsEncrypted) { "[CIFRADO]" } else { "[Simple]" }
+            
+            # Formateo seguro de fecha
+            $dateStr = "Fecha invalida"
+            try { $dateStr = ([datetime]$backup.Timestamp).ToString("yyyy-MM-dd HH:mm") } catch { $dateStr = $backup.Timestamp }
+
+            Write-Host ("   [{0,2}] {1} {2} {3,-12} {4} -> {5}" -f 
+                ($i + 1),
+                $statusMarker,
+                $dateStr,
+                $backup.Type,
+                $encryptMarker,
+                $backup.File
+            ) -ForegroundColor $statusColor
+        }
+        
+        $selectedCount = @($allBackups | Where-Object { $_.Selected }).Count
+        if ($selectedCount -gt 0) {
+            Write-Host ""
+            Write-Host "   ($selectedCount elemento(s) seleccionado(s))" -ForegroundColor Cyan
+        }
+        
+        Write-Host "`n--- Acciones ---" -ForegroundColor Yellow
+        Write-Host "   [Numero] Marcar/Desmarcar        [T] Seleccionar Todos"
+        Write-Host "   [R] Restaurar seleccionados      [N] Desmarcar Todos"
+        Write-Host "   [D] Eliminar seleccionados"
+        Write-Host ""
+        Write-Host "   [P] Purgar Respaldos Antiguos (Politica de Retencion)" -ForegroundColor Magenta
+        Write-Host ""
+        Write-Host "   [V] Volver al menu anterior" -ForegroundColor Red
+        Write-Host ""
+        
+        $choice = Read-Host "Selecciona una opcion"
+        
+        switch ($choice.ToUpper()) {
+            "R" {
+                $selectedBackups = $allBackups | Where-Object { $_.Selected }
+                if ($selectedBackups.Count -eq 0) {
+                    Write-Warning "No has seleccionado ningun respaldo para restaurar." ; Start-Sleep -Seconds 2; continue
+                }
+                # --- INICIA LOGICA DE RESTAURACION DE CADENA ---
+                Invoke-RestoreBackupChain -Manifest $manifest -DestinationPath $destinationPath -SelectedBackups $selectedBackups
+            }
+            "D" {
+                $selectedBackups = $allBackups | Where-Object { $_.Selected }
+                if ($selectedBackups.Count -eq 0) {
+                    Write-Warning "No has seleccionado ningun respaldo para eliminar." ; Start-Sleep -Seconds 2; continue
+                }
+
+                Write-Warning "¡ADVERTENCIA! Eliminar un respaldo COMPLETO o INCREMENTAL puede romper la cadena de restauracion."
+                $confirm = Read-Host "¿Estas seguro de eliminar los $($selectedBackups.Count) archivos Y sus entradas del manifiesto? (S/N)"
+                
+                if ($confirm.ToUpper() -eq 'S') {
+                    try {
+                        # --- INICIO DE BLOQUE PROTEGIDO ---
+                        foreach ($backup in $selectedBackups) {
+                            $fullPath = Join-Path $destinationPath $backup.File
+                            Write-Host "Eliminando $fullPath..." -ForegroundColor Gray
+                            
+                            # 1. Eliminar Archivo Físico
+                            if (Test-Path $fullPath) {
+                                Remove-Item $fullPath -Force -ErrorAction Stop
+                            } else {
+                                Write-Warning "   El archivo no existia en disco, eliminando solo del registro."
+                            }
+
+                            # 2. Eliminar del Manifiesto en Memoria
+                            $manifest.Backups.Remove($backup) | Out-Null
+                        }
+                        
+                        # 3. Guardar Manifiesto
+                        Update-BackupManifest -DestinationPath $destinationPath -Manifest $manifest
+                        Write-Host "[OK] Respaldos eliminados correctamente." -ForegroundColor Green
+                        
+                        # 4. Recargar la lista (CORREGIDO: Sin duplicar objetos)
+                        $allBackups = $manifest.Backups | ForEach-Object {
+                            $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -Force
+                            $status = "Available"; if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
+                            $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -Force
+                            $_ # Emitir objeto una sola vez
+                        } | Sort-Object Timestamp -Descending
+                        
+                        # Pausa para ver el resultado verde
+                        Read-Host "Presiona Enter para continuar..."
+
+                    } catch {
+                        # --- CAPTURA DE ERRORES ---
+                        Write-Error "Ocurrio un error durante la eliminacion:"
+                        Write-Error $_.Exception.Message
+                        Write-Warning "Es posible que algunos archivos no se hayan borrado."
+                        Read-Host "Presiona Enter para confirmar el error y continuar..." # <--- AQUI PODRAS LEER EL ERROR
+                    }
+                }
+            }
+			"P" {
+                Write-Log -LogLevel INFO -Message "BACKUP/Manage: Usuario selecciono Purgar Respaldos."
+                # Llamamos a la nueva funcion de logica de purga
+                Invoke-PruneBackups -Manifest $manifest -DestinationPath $destinationPath
+                
+                # Recargamos el manifiesto y la lista por si se borraron archivos
+                $manifest = Get-BackupManifest -DestinationPath $destinationPath
+                $allBackups = $manifest.Backups | ForEach-Object {
+                    $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -PassThru
+                    $status = "Available"; if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
+                    $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -PassThru
+                } | Sort-Object Timestamp -Descending
+                Read-Host "`nPurga finalizada. Presiona Enter para refrescar..."
+            }
+            "T" { $allBackups.ForEach({$_.Selected = $true}) }
+            "N" { $allBackups.ForEach({$_.Selected = $false}) }
+            "V" { continue }
+            default {
+                if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $allBackups.Count) {
+                    $index = [int]$choice - 1
+                    $allBackups[$index].Selected = -not $allBackups[$index].Selected
+                }
+            }
+        }
+    }
+}
+
+# --- FUNCION: Logica de Purga de Respaldos ---
+function Invoke-PruneBackups {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [PSCustomObject]$Manifest,
+        [string]$DestinationPath
+    )
+
+    Write-Host "`n--- Politica de Retencion de Respaldos ---" -ForegroundColor Magenta
+    
+    $keepCountInput = Read-Host "Introduce el numero de cadenas de Respaldo COMPLETO que deseas conservar (ej: 2)"
+    if (-not ($keepCountInput -match '^\d+$') -or [int]$keepCountInput -lt 1) {
+        Write-Warning "Entrada invalida. Se debe conservar al menos 1 cadena. Cancelando."
+        Start-Sleep -Seconds 2
+        return
+    }
+    $keepCount = [int]$keepCountInput
+
+    # --- 1. Identificar todas las cadenas de respaldo (por Origen) ---
+    $chains = $Manifest.Backups | Group-Object Source
+
+    $filesToDelete = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $filesToKeep = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    foreach ($chain in $chains) {
+        $source = $chain.Name
+        Write-Host "`n[+] Analizando cadena para: $source" -ForegroundColor Cyan
+        
+        $backupsInChain = $chain.Group
+        $fullBackups = $backupsInChain | Where-Object { $_.Type -eq 'Full' } | Sort-Object Timestamp -Descending
+        
+        if ($fullBackups.Count -le $keepCount) {
+            Write-Host "   - Se encontraron $($fullBackups.Count) cadenas. Politica de retencion ($keepCount) no alcanzada. No se purgara nada." -ForegroundColor Green
+            $filesToKeep.AddRange($backupsInChain)
+            continue
+        }
+
+        # --- 2. Identificar cadenas a MANTENER ---
+        $fullBackupsToKeep = $fullBackups | Select-Object -First $keepCount
+        $filesToKeep.AddRange($fullBackupsToKeep)
+
+        foreach ($full in $fullBackupsToKeep) {
+            $children = Get-BackupChildren -Manifest $Manifest -Parent $full
+            $filesToKeep.AddRange($children)
+        }
+        
+        # --- 3. Identificar cadenas a ELIMINAR ---
+        $fullBackupsToDelete = $fullBackups | Select-Object -Skip $keepCount
+        $filesToDelete.AddRange($fullBackupsToDelete)
+        
+        foreach ($full in $fullBackupsToDelete) {
+            $children = Get-BackupChildren -Manifest $Manifest -Parent $full
+            $filesToDelete.AddRange($children)
+        }
+        
+        Write-Host "   - Se conservaran $($fullBackupsToKeep.Count) cadenas." -ForegroundColor Gray
+        Write-Host "   - Se purgaran $($fullBackupsToDelete.Count) cadenas antiguas." -ForegroundColor Yellow
+    }
+
+    if ($filesToDelete.Count -eq 0) {
+        Write-Host "`n[INFO] No se encontraron respaldos obsoletos para purgar." -ForegroundColor Green
+        return
+    }
+
+    # --- 4. Confirmacion Final ---
+    Write-Warning "`n¡CONFIRMACION!"
+    Write-Host "Se eliminaran permanentemente los siguientes $($filesToDelete.Count) archivos de respaldo:"
+    $filesToDelete | ForEach-Object { Write-Host "   - $($_.File)" -ForegroundColor Red }
+    
+    $confirm = Read-Host "Escribe 'PURGAR' para confirmar esta accion"
+    if ($confirm -ne 'PURGAR') {
+        Write-Warning "Accion cancelada por el usuario."
+        Start-Sleep -Seconds 2
+        return
+    }
+
+    # --- 5. Ejecucion de Purga ---
+    foreach ($file in $filesToDelete) {
+        if ($PSCmdlet.ShouldProcess($file.File, "Eliminar archivo obsoleto")) {
+            Write-Host "Eliminando $($file.File)..." -ForegroundColor Gray
+            Remove-Item (Join-Path $DestinationPath $file.File) -ErrorAction SilentlyContinue
+            $Manifest.Backups.Remove($file) | Out-Null
+        }
+    }
+
+    Update-BackupManifest -DestinationPath $DestinationPath -Manifest $Manifest
+    Write-Host "[OK] Purga completada." -ForegroundColor Green
+}
+
+# --- FUNCION AUXILIAR: Encontrar Hijos de un Respaldo ---
+function Get-BackupChildren {
+    param(
+        [PSCustomObject]$Manifest,
+        [PSCustomObject]$Parent
+    )
+    
+    $children = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $directChildren = $Manifest.Backups | Where-Object { $_.Parent -eq $Parent.File }
+    
+    foreach ($child in $directChildren) {
+        $children.Add($child)
+        # Recursion: Llama a si misma para encontrar los hijos de este hijo
+        $grandChildren = Get-BackupChildren -Manifest $Manifest -Parent $child
+        $children.AddRange($grandChildren)
+    }
+    
+    return $children
+}
+
+# --- FUNCION 5: Verificar Integridad ---
+function Verify-BackupIntegrity {
+    param()
+    
+    Write-Host "`n[+] Verificar Integridad de Respaldos" -ForegroundColor Yellow
+    Write-Host "-------------------------------------------------------"
+    
+    # --- 1. Seleccionar la carpeta de destino ---
+    Write-Host "`n[+] Por favor, selecciona la CARPETA de Destino que contiene el manifiesto." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de Destino de tus Respaldos"
+    if ([string]::IsNullOrWhiteSpace($destinationPath)) {
+        Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+
+    # --- 2. Cargar Manifiesto ---
+    $manifest = Get-BackupManifest -DestinationPath $destinationPath
+    if ($manifest.Backups.Count -eq 0) {
+        Write-Host "`n[INFO] No se encontraron respaldos registrados en el manifiesto." -ForegroundColor Yellow
+        Read-Host "`nPresiona Enter para continuar..."
+        return
+    }
+
+    # --- 3. Verificar si 7-Zip esta disponible ---
+    if (-not (Ensure-7ZipIsInstalled)) {
+        Read-Host "`nPresiona Enter para volver..."
+        return
+    }
+
+    Write-Host "`n[+] Verificando la integridad de $($manifest.Backups.Count) archivos de respaldo..." -ForegroundColor Yellow
+    $issuesFound = 0
+    $verificationResults = @()
+
+    foreach ($backup in $manifest.Backups) {
+        $archivePath = Join-Path $destinationPath $backup.File
+        $result = [PSCustomObject]@{ Check = $backup.File; Status = "ERROR"; Details = "Archivo no encontrado" }
+
+        if (Test-Path $archivePath) {
+            Write-Host "   - Probando $($backup.File)..." -ForegroundColor Gray
+            $7zArgs = @("t", "`"$archivePath`"") # "t" es el comando Test
+            if ($backup.IsEncrypted) {
+                # 7z t no puede probar un archivo cifrado sin la contraseña.
+                # Solo podemos verificar que el encabezado no este corrupto.
+                $7zArgs += "-p_DUMMY_PASSWORD_" # Usamos una contraseña incorrecta a proposito
+            }
+            
+            # Ocultamos la salida de 7z
+            $output = & "7z.exe" $7zArgs 2>&1
+            $exitCode = $LASTEXITCODE
+
+            if ($exitCode -eq 0) {
+                # Exito
+                $result.Status = "OK"
+                $result.Details = "Archivo integro."
+            } elseif ($backup.IsEncrypted -and ($output -match "Wrong password" -or $exitCode -eq 2)) {
+                # Esto es un "exito" para un archivo cifrado, significa que 7z pudo leerlo
+                $result.Status = "OK (Cifrado)"
+                $result.Details = "El archivo esta cifrado y parece ser valido."
+            } else {
+                # Error real
+                $result.Status = "Error"
+                $result.Details = "¡Archivo corrupto! (Codigo: $exitCode)"
+                $issuesFound++
+            }
+        } else {
+            $issuesFound++
+        }
+        $verificationResults += $result
+    }
+
+    # --- 4. Mostrar Resultados ---
+    Write-Host "`nResultados de la verificacion:" -ForegroundColor Cyan
+    $verificationResults | ForEach-Object {
+        $statusColor = switch ($_.Status) {
+            "OK" { "Green" }
+            "OK (Cifrado)" { "Green" }
+            "Error" { "Red" }
+            default { "White" }
+        }
+        Write-Host "   $($_.Check): $($_.Status) - $($_.Details)" -ForegroundColor $statusColor
+    }
+    
+    if ($issuesFound -eq 0) {
+        Write-Host "`n[OK] Todos los respaldos en el manifiesto estan integros y disponibles." -ForegroundColor Green
+    } else {
+        Write-Host "`n[ERROR CRITICO] Se encontraron $issuesFound problemas (archivos corruptos o faltantes)." -ForegroundColor Red
+        Write-Host "Revisa los detalles. Es posible que la cadena de respaldo este rota." -ForegroundColor Red
+    }
+    
+    Read-Host "`nPresiona Enter para continuar..."
+}
+
+# --- FUNCION 6: Logica de Restauracion de Cadena (NUEVA) ---
+# Esta funcion contiene la logica para restaurar una cadena incremental
+function Invoke-RestoreBackupChain {
+    param(
+        [PSCustomObject]$Manifest,
+        [string]$DestinationPath,
+        [PSCustomObject[]]$SelectedBackups
+    )
+    
+    if (-not (Ensure-7ZipIsInstalled)) { return }
+    
+    Write-Host "`n[+] Selecciona la CARPETA de Destino donde se restauraran los archivos." -ForegroundColor Yellow
+    $restorePath = Select-PathDialog -DialogType 'Folder' -Title "Elige la Carpeta de Destino de la Restauracion"
+    if ([string]::IsNullOrWhiteSpace($restorePath)) {
+        Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+
+    foreach ($selectedBackup in $SelectedBackups) {
+        Write-Host "`n--- Iniciando Restauracion de: $($selectedBackup.File) ---" -ForegroundColor Cyan
+        
+        # --- 1. Construir la cadena de restauracion ---
+        $restoreChain = [System.Collections.Generic.List[PSCustomObject]]::new()
+        $current = $selectedBackup
+        while ($current -ne $null) {
+            $restoreChain.Insert(0, $current) # Insertar al principio para revertir el orden
+            if ($current.Parent -eq $null) {
+                $current = $null # Llego al Full
+            } else {
+                $current = $Manifest.Backups | Where-Object { $_.File -eq $current.Parent } | Select-Object -First 1
+            }
+        }
+        
+        Write-Host "[INFO] Este respaldo depende de $($restoreChain.Count) archivo(s):" -ForegroundColor Gray
+        $restoreChain | ForEach-Object { Write-Host "   - $($_.File)" }
+
+        # --- 2. Ejecutar la cadena ---
+        $passwords = @{} # Almacen de contraseñas para no preguntar dos veces
+        $globalSuccess = $true
+
+        foreach ($backupFile in $restoreChain) {
+            $archivePath = Join-Path $DestinationPath $backupFile.File
+            if (-not (Test-Path $archivePath)) {
+                Write-Error "¡FALTANTE! No se puede encontrar el archivo '$($backupFile.File)'. La cadena de restauracion esta ROTA."
+                $globalSuccess = $false
+                break
+            }
+            
+            Write-Host "`n[+] Aplicando: $($backupFile.File)..." -ForegroundColor Yellow
+            $7zArgs = @("x", "`"$archivePath`"", "-o`"$restorePath`"", "-y")
+            
+            if ($backupFile.IsEncrypted) {
+                $password = $null
+                if ($passwords.ContainsKey($backupFile.File)) {
+                    $password = $passwords[$backupFile.File]
+                } else {
+                    $password = Read-Host "Introduce la contrasena para '$($backupFile.File)'" -AsSecureString
+                    $passwords[$backupFile.File] = $password
+                }
+                $7zArgs += "-p$($password | ConvertFrom-SecureString)"
+            }
+            
+            $process = Start-Process "7z.exe" -ArgumentList $7zArgs -Wait -NoNewWindow -PassThru
+            
+            if ($process.ExitCode -ne 0) {
+                Write-Error "¡FALLO! 7-Zip fallo al extraer '$($backupFile.File)' (Codigo: $($process.ExitCode))."
+                Write-Error "La contrasena puede ser incorrecta o el archivo esta corruto."
+                $globalSuccess = $false
+                break
+            }
+        }
+
+        if ($globalSuccess) {
+            Write-Host "`n[EXITO] Restauracion de '$($selectedBackup.File)' completada en '$restorePath'." -ForegroundColor Green
+        } else {
+            Write-Error "`n[FALLO] La restauracion de '$($selectedBackup.File)' ha fallado." -ForegroundColor Red
+        }
+    }
+    
+    $passwords = $null; [GC]::Collect() # Limpiar contraseñas de memoria
+    Read-Host "`nPresiona Enter para continuar..."
+}
+
+
+# ===================================================================
+# --- FUNCIONES AUXILIARES DE RESPALDO (NUEVAS Y MODIFICADAS) ---
+# ===================================================================
+
+# --- Gestor del Manifiesto ---
+function Get-BackupManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DestinationPath
+    )
+    
+    $manifestPath = Join-Path $DestinationPath "manifest.json"
+    
+    if (Test-Path $manifestPath) {
+        try {
+            Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Leyendo manifiesto existente en '$manifestPath'."
+            
+            # 1. Leer el contenido de texto plano
+            $jsonContent = Get-Content $manifestPath -Raw
+            
+            # 2. Convertir desde JSON
+            $manifest = $jsonContent | ConvertFrom-Json
+            
+            # 3. Asegurarse de que 'Backups' sea una Lista y ELIMINAR DUPLICADOS (Metodo Manual)
+            $cleanList = New-Object System.Collections.Generic.List[PSCustomObject]
+            $seenFiles = @{} # Diccionario para recordar nombres vistos
+
+            if ($null -ne $manifest.Backups) {
+                # Forzamos a que sea un array para poder recorrerlo
+                $rawBackups = [PSCustomObject[]]@($manifest.Backups)
+                
+                foreach ($backup in $rawBackups) {
+                    # Usamos el nombre del archivo como clave unica
+                    $fileName = $backup.File
+                    
+                    # Si NO hemos visto este archivo antes, lo agregamos
+                    if (-not $seenFiles.ContainsKey($fileName)) {
+                        $seenFiles[$fileName] = $true
+                        $cleanList.Add($backup)
+                    }
+                }
+            }
+            # Ahora $cleanList tiene solo una copia de cada archivo
+            $manifest.Backups = $cleanList
+            return $manifest
+        } catch {
+            # --- MEJORA DE SEGURIDAD (Punto 3) ---
+            $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            $corruptFile = Join-Path $DestinationPath "manifest_corrupt_$timestamp.json"
+            
+            Write-Warning "¡ALERTA CRITICA! El archivo 'manifest.json' está corrupto."
+            Write-Warning "Error detectado: $($_.Exception.Message)"
+            
+            # Intentamos salvar el archivo corrupto para análisis manual
+            try {
+                Copy-Item -Path $manifestPath -Destination $corruptFile -Force
+                Write-Warning "Se ha guardado una copia del archivo dañado en: $corruptFile"
+            } catch {
+                Write-Error "No se pudo hacer copia de seguridad del manifiesto dañado."
+            }
+
+            Write-Log -LogLevel ERROR -Message "BACKUP/7-Zip: Manifiesto corrupto. Copia guardada en '$corruptFile'. Se inicia nueva cadena."
+            
+            # Retornamos estructura vacía para no romper el script
+            return [PSCustomObject]@{ 
+                ManifestVersion = "1.0-Recovered"
+                Backups = [System.Collections.Generic.List[PSCustomObject]]::new()
+            }
+        }
+    }
+}
+
+# --- Escritor del Manifiesto ---
+function Update-BackupManifest {
+    param(
+        [string]$DestinationPath,
+        [PSCustomObject]$Manifest
+    )
+    $manifestPath = Join-Path $DestinationPath "manifest.json"
+    try {
+        $Manifest | ConvertTo-Json -Depth 5 | Set-Content -Path $manifestPath -Encoding utf8
+        Write-Host "[INFO] Manifiesto de respaldo actualizado." -ForegroundColor Gray
+        Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Manifiesto '$manifestPath' actualizado."
+    } catch {
+        Write-Warning "No se pudo actualizar el manifiesto JSON. Este respaldo no sera rastreado."
+        Write-Log -LogLevel ERROR -Message "BACKUP/7-Zip: Fallo al escribir en '$manifestPath'."
+    }
+}
+
+# --- FUNCION FALTANTE: Verificar Motor de Software ---
+function Test-SoftwareEngine {
+    param(
+        [string]$Engine
+    )
+    if ($Engine -eq 'Winget') {
+        # Verifica si el comando winget existe en el sistema
+        return (Get-Command "winget" -ErrorAction SilentlyContinue) -ne $null
+    }
+    return $false
+}
+
+# --- Verificador/Instalador de 7-Zip ---
+function Ensure-7ZipIsInstalled {
+    $7zPath = Get-Command "7z" -ErrorAction SilentlyContinue
+    if ($7zPath) { return $true }
+
+    Write-Warning "El modulo de Respaldo Avanzado requiere 7-Zip."
+    Write-Warning "No se ha detectado '7z.exe' en tu sistema."
+
+    # Usar el motor de software existente para instalarlo
+    if (Test-SoftwareEngine -Engine 'Winget') {
+        $installChoice = Read-Host "`n¿Deseas instalar 7-Zip (ID: 7zip.7zip) usando Winget ahora? (S/N)"
+        if ($installChoice.ToUpper() -eq 'S') {
+            Write-Host "`n[+] Instalando 7-Zip via Winget..." -ForegroundColor Yellow
+            try {
+                Write-Log -LogLevel ACTION -Message "BACKUP/7-Zip: Intentando instalar 7-Zip via Winget."
+                winget install --id 7zip.7zip -s winget --accept-package-agreements --accept-source-agreements --silent
+                
+                # Volver a verificar
+                $7zPath = Get-Command "7z" -ErrorAction SilentlyContinue
+                if ($7zPath) {
+                    Write-Host "[OK] 7-Zip instalado correctamente." -ForegroundColor Green
+                    return $true
+                } else {
+                    Write-Error "La instalacion de 7-Zip parece haber fallado."
+                    return $false
+                }
+            } catch {
+                Write-Error "Fallo la instalacion de 7-Zip con Winget. Error: $($_.Exception.Message)"
+                return $false
+            }
+        } else {
+            Write-Host "[INFO] Instalacion omitida. No se puede continuar con el respaldo avanzado." -ForegroundColor Gray
+            return $false
+        }
+    } else {
+        Write-Error "No se detecto Winget. Por favor, instala 7-Zip manualmente para usar esta funcion."
+        return $false
+    }
+}
+
+# --- Generador de Contraseñas ---
+function Generate-SecurePassword {
+    Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Generando nueva contrasena segura."
+    try {
+        Add-Type -AssemblyName System.Web
+        # 32 caracteres, 4 caracteres no alfanumericos
+        return [System.Web.Security.Membership]::GeneratePassword(32, 4)
+    } catch {
+        Write-Warning "No se pudo usar System.Web para generar contrasena. Usando metodo de fallback."
+        $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+'
+        $password = -join ($chars | Get-Random -Count 32)
+        return $password
+    }
+}
+
+# --- FUNCION 7: Contenedor de Respaldo Simple (Robocopy) ---
+function Invoke-SimpleRobocopyBackupMenu {
+    Write-Log -LogLevel INFO -Message "BACKUP/Robocopy: Usuario entro al submenu de respaldo simple."
+
+    # Funcion interna para no repetir el menu de seleccion de modo
+    function Get-BackupMode {
+        Write-Host ""
+        Write-Host "--- Elige un modo de respaldo ---" -ForegroundColor Yellow
+        Write-Host "   [1] Simple (Copiar y Actualizar)"
+        Write-Host "       Copia archivos nuevos o modificados. No borra nada en el destino." -ForegroundColor Gray
+        Write-Host "   [2] Sincronizacion (Espejo)"
+        Write-Host "       Hace que el destino sea identico al origen. Borra archivos en el destino." -ForegroundColor Red
+        
+        $modeChoice = Read-Host "`nSelecciona el modo"
+        
+        switch ($modeChoice) {
+            '1' { return 'Copy' }
+            '2' { return 'Mirror' }
+            default {
+                Write-Warning "Opcion invalida." ; Start-Sleep -Seconds 2
+                return $null
+            }
+        }
+    }
+
+    Clear-Host
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "          Respaldo Simple (Sincronizacion Robocopy)      " -ForegroundColor Cyan
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "--- Elige un tipo de respaldo ---" -ForegroundColor Yellow
+    Write-Host "   [1] Respaldo de Perfil de Usuario (Escritorio, Documentos, etc.)"
+    Write-Host "   [2] Respaldo de Carpeta o Archivo(s) Personalizado"
+    Write-Host ""
+    Write-Host "   [V] Volver al menu anterior" -ForegroundColor Red
+    Write-Host ""
+    
+    $backupChoice = Read-Host "Selecciona una opcion"
+    
+    if ($backupChoice.ToUpper() -eq 'V') { return }
+
+    switch ($backupChoice.ToUpper()) {
+        '1' {
+            Write-Log -LogLevel INFO -Message "BACKUP/Robocopy: Usuario selecciono 'Respaldo de Perfil de Usuario'."
+            $backupMode = Get-BackupMode
+            if ($backupMode) {
+                Invoke-UserDataBackup -Mode $backupMode
+            }
+        }
+        '2' {
+            Write-Log -LogLevel INFO -Message "BACKUP/Robocopy: Usuario selecciono 'Respaldo Personalizado'."
+            $typeChoice = Read-Host "Deseas seleccionar una [C]arpeta o [A]rchivo(s)?"
+            $dialogType = ""
+            $dialogTitle = ""
+
+            if ($typeChoice.ToUpper() -eq 'C') {
+                $dialogType = 'Folder'
+                $dialogTitle = "Respaldo Personalizado: Elige la Carpeta de Origen"
+            } elseif ($typeChoice.ToUpper() -eq 'A') {
+                $dialogType = 'File'
+                $dialogTitle = "Respaldo Personalizado: Elige el o los Archivo(s) de Origen"
+            } else {
+                Write-Warning "Opcion invalida."; Start-Sleep -Seconds 2; return
+            }
+
+            $customPath = Select-PathDialog -DialogType $dialogType -Title $dialogTitle
+
+            if ($customPath) {
+                $backupMode = Get-BackupMode
+                if ($backupMode) {
+                    Invoke-UserDataBackup -Mode $backupMode -CustomSourcePath $customPath
+                }
+            } else {
+                Write-Warning "No se selecciono ninguna ruta. Operacion cancelada."
+                Start-Sleep -Seconds 2
+            }
+        }
+        default { Write-Warning "Opcion no valida." ; Start-Sleep -Seconds 2 }
+    }
+}
+
+# --- FUNCION 8: Logica de Respaldo Robocopy ---
+function Invoke-UserDataBackup {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('Copy', 'Mirror')]
+        [string]$Mode,
+
+        [string[]]$CustomSourcePath
+    )
+
+    # 1. Determinamos el origen: automatico o personalizado
+    $backupType = 'Folders'
+    $sourcePaths = @()
+    if ($CustomSourcePath) {
+        if ($CustomSourcePath.Count -eq 1 -and (Get-Item $CustomSourcePath[0]).PSIsContainer) {
+            $backupType = 'Folders'
+            $sourcePaths = $CustomSourcePath
+        } else {
+            $backupType = 'Files'
+            $sourcePaths = $CustomSourcePath
+        }
+    } else {
+        $backupType = 'Folders'
+        $sourcePaths = @(
+            [System.Environment]::GetFolderPath('Desktop')
+			[System.Environment]::GetFolderPath('MyDocuments')
+            [System.Environment]::GetFolderPath('MyPictures')
+            [System.Environment]::GetFolderPath('MyMusic')
+            [System.Environment]::GetFolderPath('MyVideos')
+        ) | Where-Object { Test-Path $_ }
+    }
+    
+    # 2. Solicitamos y validamos el destino
+    Write-Host "`n[+] Por favor, selecciona la carpeta de destino para el respaldo..." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Paso 2: Elige la Carpeta de Destino del Respaldo"
+    
+    if ([string]::IsNullOrWhiteSpace($destinationPath)) {
+        Write-Warning "No se selecciono una carpeta de destino. Operacion cancelada." ; Start-Sleep -Seconds 2; return
+    }
+
+    # Comprobacion inteligente de Origen vs. Destino
+    $sourceDriveLetter = (Get-Item -Path $sourcePaths[0]).PSDrive.Name
+    $destinationDriveLetter = (Get-Item -Path $destinationPath).PSDrive.Name
+    if ($sourceDriveLetter.ToUpper() -eq $destinationDriveLetter.ToUpper()) {
+        Write-Warning "El destino esta en la misma unidad que el origen (Unidad $($sourceDriveLetter.ToUpper()):)."
+        Write-Warning "Un respaldo en el mismo disco no protege contra fallos del disco fisico."
+        if ((Read-Host "Estas seguro de que deseas continuar? (S/N)").ToUpper() -ne 'S') {
+            Write-Host "[INFO] Operacion cancelada." -ForegroundColor Yellow; Start-Sleep -Seconds 2; return
+        }
+    }
+    
+    # Calculamos el espacio requerido
+    Write-Host "`n[+] Calculando espacio requerido para el respaldo. Esto puede tardar..." -ForegroundColor Yellow
+    $sourceTotalSize = 0
+    try {
+        if ($backupType -eq 'Files') {
+            $sourceTotalSize = ($sourcePaths | Get-Item | Measure-Object -Property Length -Sum).Sum
+        } else {
+            foreach ($folder in $sourcePaths) {
+                $sourceTotalSize += (Get-ChildItem -Path $folder -Recurse -Force -ErrorAction Stop | Measure-Object -Property Length -Sum).Sum
+            }
+        }
+    } catch {
+        Write-Warning "No se pudo calcular el tamano total. Error: $($_.Exception.Message)"
+    }
+    
+    $destinationFreeSpace = (Get-Volume -DriveLetter $destinationDriveLetter).SizeRemaining
+    $sourceTotalSizeGB = [math]::Round($sourceTotalSize / 1GB, 2)
+    $destinationFreeSpaceGB = [math]::Round($destinationFreeSpace / 1GB, 2)
+    Write-Host "Espacio requerido estimado: $sourceTotalSizeGB GB"
+    Write-Host "Espacio disponible en el destino ($($destinationDriveLetter.ToUpper()):): $destinationFreeSpaceGB GB"
+
+    if ($sourceTotalSize -gt $destinationFreeSpace) {
+        Write-Error "No hay suficiente espacio en el disco de destino para completar el respaldo."
+        Read-Host "`nOperacion abortada. Presiona Enter para volver al menu..."
+        return
+    }
+
+    # 3. Configuramos Robocopy
+    $logDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
+    if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory | Out-Null }
+    $logFile = Join-Path $logDir "Respaldo_Robocopy_$(Get-Date -Format 'yyyy-MM-dd_HH-mm').log"
+    $baseRoboCopyArgs = @("/COPY:DAT", "/R:3", "/W:5", "/XJ", "/NP", "/TEE")
+
+    # 4. Mostramos el resumen y pedimos confirmacion final
+    Clear-Host
+    $modeDescription = if ($Mode -eq 'Mirror') { "Sincronizacion Completa (Modo Espejo)" } else { "Respaldo Simple (Anadir/Actualizar)" }
+    Write-Host "--- RESUMEN DE LA OPERACION DE RESPALDO ---" -ForegroundColor Cyan
+    Write-Host "Modo: $modeDescription"
+    Write-Host "Destino: $destinationPath"
+    if ($backupType -eq 'Files') {
+        Write-Host "Archivos de Origen:"
+    } else {
+        Write-Host "Carpetas de Origen:"
+    }
+    $sourcePaths | ForEach-Object { Write-Host " - $_" }
+    if ($Mode -eq 'Mirror') {
+        Write-Warning "El Modo Espejo eliminara cualquier archivo en el destino que no exista en el origen."
+    }
+    Write-Host "Se generara un registro detallado en: $logFile"
+    
+	Write-Log -LogLevel ACTION -Message "BACKUP: Iniciando operacion. Modo: '$Mode'. Origen: $($sourcePaths -join ', '). Destino: '$destinationPath'."
+	
+    Write-Host ""
+    Write-Host "--- CONFIRMACION FINAL ---" -ForegroundColor Yellow
+    Write-Host "   [S] Si, iniciar solo el respaldo"
+    Write-Host "   [V] Si, respaldar Y verificar (Comprobacion Rapida)"
+    Write-Host "   [H] Si, respaldar Y verificar (Comprobacion Profunda por Hash - MUY LENTO)"
+    Write-Host "   [N] No, cancelar operacion"
+    $confirmChoice = Read-Host "`nElige una opcion"
+
+    $verificationType = 'None' # Valor por defecto
+    switch ($confirmChoice.ToUpper()) {
+        'S' { $verificationType = 'None' }
+        'V' { $verificationType = 'Fast' }
+        'H' { $verificationType = 'Deep' }
+        'N' { Write-Host "[INFO] Operacion cancelada por el usuario." -ForegroundColor Yellow; Start-Sleep -Seconds 2; return }
+        default { Write-Warning "Opcion no valida. Operacion cancelada."; Start-Sleep -Seconds 2; return }
+    }
+
+    # 5. Ejecutamos el respaldo
+    $logArg = "/LOG+:`"$logFile`""
+
+    if ($backupType -eq 'Files') {
+        Write-Host "`n[+] Respaldando $($sourcePaths.Count) archivo(s) hacia '$destinationPath'..." -ForegroundColor Yellow
+        $baseFileArgs = $baseRoboCopyArgs
+        $filesByDirectory = $sourcePaths | Get-Item | Group-Object -Property DirectoryName
+        foreach ($group in $filesByDirectory) {
+            $sourceDir = $group.Name
+            $fileNames = $group.Group | ForEach-Object { "`"$($_.Name)`"" }
+            Write-Host " - Procesando lote desde '$sourceDir'..." -ForegroundColor Gray
+            $currentArgs = @("`"$sourceDir`"", "`"$destinationPath`"") + $fileNames + $baseFileArgs + $logArg
+            Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow
+        }
+    } else {
+        $folderArgs = $baseRoboCopyArgs + "/E"
+        if ($Mode -eq 'Mirror') {
+            $folderArgs = $baseRoboCopyArgs + "/MIR"
+        }
+        foreach ($sourceFolder in $sourcePaths) {
+            $folderName = Split-Path $sourceFolder -Leaf
+            $destinationFolder = Join-Path $destinationPath $folderName
+            Write-Host "`n[+] Respaldando '$folderName' hacia '$destinationFolder'..." -ForegroundColor Yellow
+            $currentArgs = @("`"$sourceFolder`"", "`"$destinationFolder`"") + $folderArgs + $logArg
+            Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow
+        }
+    }
+
+    Write-Host "`n[EXITO] Operacion de respaldo completada." -ForegroundColor Green
+	switch ($verificationType) {
+        'Fast' {
+			Write-Log -LogLevel INFO -Message "BACKUP: Iniciando verificacion rapida (Robocopy /L)."
+            Invoke-BackupRobocopyVerification -logFile $logFile -baseRoboCopyArgs $baseRoboCopyArgs -backupType $backupType -sourcePaths $sourcePaths -destinationPath $destinationPath -Mode $Mode
+        }
+        'Deep' {
+			Write-Log -LogLevel INFO -Message "BACKUP: Iniciando verificacion profunda (Hash SHA256)."
+            Invoke-BackupHashVerification -sourcePaths $sourcePaths -destinationPath $destinationPath -backupType $backupType -logFile $logFile
+        }
+        # Si es 'None', no hacemos nada
+    }
+    Write-Host "Se ha guardado un registro detallado en '$logFile'"
+    if ((Read-Host "Deseas abrir el archivo de registro ahora? (S/N)").ToUpper() -eq 'S') {
+        Start-Process "notepad.exe" -ArgumentList $logFile
+    }
+    Read-Host "`nPresiona Enter para volver al menu..."
+}
+
+# --- FUNCION 9: Auxiliar de Dialogo ---
+# (Esta funcion es necesaria para todos los modulos)
+function Select-PathDialog {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('Folder', 'File')]
+        [string]$DialogType,
+
+        [string]$Title,
+
+        [string]$Filter = "Todos los archivos (*.*)|*.*"
+    )
+    
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        if ($DialogType -eq 'Folder') {
+            $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+            $dialog.Description = $Title
+            if ($dialog.ShowDialog() -eq 'OK') {
+                return $dialog.SelectedPath
+            }
+        } elseif ($DialogType -eq 'File') {
+            $dialog = New-Object System.Windows.Forms.OpenFileDialog
+            $dialog.Title = $Title
+            $dialog.Filter = $Filter
+            $dialog.CheckFileExists = $true
+            $dialog.CheckPathExists = $true
+            $dialog.Multiselect = $true # Permitimos seleccionar multiples archivos
+            if ($dialog.ShowDialog() -eq 'OK') {
+                return $dialog.FileNames # Devolvemos un array de nombres de archivo
+            }
+        }
+    } catch {
+        Write-Error "No se pudo mostrar el dialogo de seleccion. Error: $($_.Exception.Message)"
+    }
+    
+    return $null # Devuelve nulo si el usuario cancela
+}
+
+# --- FUNCIONES 10 y 11: Auxiliares de Robocopy ---
+function Invoke-BackupRobocopyVerification {
+    [CmdletBinding()]
+    param(
+        $logFile, $baseRoboCopyArgs, $backupType, $sourcePaths, $destinationPath, $Mode
+    )
+
+    Write-Host "`n[+] Iniciando comprobacion de integridad (modo de solo listado)..." -ForegroundColor Yellow
+    Write-Output "`r`n`r`n================================================`r`n" | Out-File -FilePath $logFile -Append -Encoding UTF8
+    Write-Output "   INICIO DE LA COMPROBACION DE INTEGRIDAD (RAPIDA)`r`n" | Out-File -FilePath $logFile -Append -Encoding UTF8
+    Write-Output "================================================`r`n" | Out-File -FilePath $logFile -Append -Encoding UTF8
+
+    $verifyBaseArgs = $baseRoboCopyArgs + "/L"
+    $logArg = "/LOG+:`"$logFile`""
+
+    if ($backupType -eq 'Files') {
+        $filesByDirectory = $sourcePaths | Get-Item | Group-Object -Property DirectoryName
+        foreach ($group in $filesByDirectory) {
+            $sourceDir = $group.Name
+            $fileNames = $group.Group | ForEach-Object { "`"$($_.Name)`"" }
+            Write-Host " - Verificando lote desde '$sourceDir'..." -ForegroundColor Gray
+            $currentArgs = @("`"$sourceDir`"", "`"$destinationPath`"") + $fileNames + $verifyBaseArgs + $logArg
+            Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow
+        }
+    } else {
+        $folderArgs = $verifyBaseArgs + "/E"
+        if ($Mode -eq 'Mirror') { $folderArgs = $verifyBaseArgs + "/MIR" }
+        foreach ($sourceFolder in $sourcePaths) {
+            $folderName = Split-Path $sourceFolder -Leaf
+            $destinationFolder = Join-Path $destinationPath $folderName
+            Write-Host "`n[+] Verificando '$folderName' en '$destinationFolder'..." -ForegroundColor Gray
+            $currentArgs = @("`"$sourceFolder`"", "`"$destinationFolder`"") + $folderArgs + $logArg
+            Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow
+        }
+    }
+    
+    Write-Host "[OK] Comprobacion de integridad finalizada. Revisa el registro para ver los detalles." -ForegroundColor Green
+    Write-Host "   Si no aparecen archivos listados en la seccion de verificacion, la copia es integra." -ForegroundColor Gray
+}
+
+function Invoke-BackupHashVerification {
+    [CmdletBinding()]
+    param(
+        $sourcePaths, $destinationPath, $backupType, $logFile
+    )
+    
+    Write-Host "`n[+] Iniciando comprobacion profunda por Hash (SHA256). Esto puede ser MUY LENTO." -ForegroundColor Yellow
+    
+    $sourceFiles = @()
+    if ($backupType -eq 'Files') {
+        $sourceFiles = $sourcePaths | Get-Item
+    } else {
+        $sourcePaths | ForEach-Object { $sourceFiles += Get-ChildItem $_ -Recurse -File -ErrorAction SilentlyContinue }
+    }
+
+    if ($sourceFiles.Count -eq 0) { Write-Warning "No se encontraron archivos de origen para verificar."; return }
+
+    $totalFiles = $sourceFiles.Count
+    $checkedFiles = 0
+    $mismatchedFiles = 0
+    $missingFiles = 0
+    $mismatchedFileList = [System.Collections.Generic.List[string]]::new()
+    $missingFileList = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($sourceFile in $sourceFiles) {
+        $checkedFiles++
+        Write-Progress -Activity "Verificando hashes de archivos" -Status "Procesando: $($sourceFile.Name)" -PercentComplete (($checkedFiles / $totalFiles) * 100)
+        
+        $destinationFile = ""
+        if ($backupType -eq 'Folders') {
+             $baseSourceFolder = ($sourcePaths | Where-Object { $sourceFile.FullName.StartsWith($_) })[0]
+             $relativePath = $sourceFile.FullName.Substring($baseSourceFolder.Length)
+             $destinationFolder = (Join-Path $destinationPath (Split-Path $baseSourceFolder -Leaf))
+             $destinationFile = Join-Path $destinationFolder $relativePath
+        } else {
+             $destinationFile = Join-Path $destinationPath $sourceFile.Name
+        }
+        
+        if (Test-Path $destinationFile) {
+            try {
+                $sourceHash = (Get-FileHash $sourceFile.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+                $destHash = (Get-FileHash $destinationFile -Algorithm SHA256 -ErrorAction Stop).Hash
+                if ($sourceHash -ne $destHash) {
+                    $mismatchedFiles++
+                    $message = "DISCREPANCIA DE HASH: $($sourceFile.FullName)"
+                    Write-Warning $message
+                    $mismatchedFileList.Add($message)
+                }
+            } catch {
+                $message = "ERROR DE LECTURA: No se pudo calcular el hash de '$($sourceFile.Name)' o su par. Puede estar en uso."
+                Write-Warning $message
+                $mismatchedFileList.Add($message)
+            }
+        } else {
+            $missingFiles++
+            $message = "ARCHIVO FALTANTE en el destino: $($sourceFile.FullName)"
+            Write-Warning $message
+            $missingFileList.Add($message)
+        }
+    }
+
+    Write-Progress -Activity "Verificacion por Hash" -Completed
+    Write-Host "`n--- RESUMEN DE LA COMPROBACION PROFUNDA ---" -ForegroundColor Cyan
+    Write-Host "Archivos totales verificados: $totalFiles"
+    $mismatchColor = if ($mismatchedFiles -gt 0) { 'Red' } else { 'Green' }
+    Write-Host "Archivos con discrepancias  : $mismatchedFiles" -ForegroundColor $mismatchColor
+    $missingColor = if ($missingFiles -gt 0) { 'Red' } else { 'Green' }
+    Write-Host "Archivos faltantes en destino: $missingFiles" -ForegroundColor $missingColor
+    
+    $logSummary = @"
+
+-------------------------------------------------
+   RESUMEN DE LA COMPROBACION PROFUNDA POR HASH
+-------------------------------------------------
+Archivos totales verificados: $totalFiles
+Archivos con discrepancias  : $mismatchedFiles
+Archivos faltantes en destino: $missingFiles
+"@
+    if ($mismatchedFileList.Count -gt 0) {
+        $logSummary += "`r`n`r`n--- LISTA DE DISCREPANCIAS ---`r`n"
+        $logSummary += ($mismatchedFileList | Out-String)
+    }
+    if ($missingFileList.Count -gt 0) {
+        $logSummary += "`r`n`r`n--- LISTA DE ARCHIVOS FALTANTES ---`r`n"
+        $logSummary += ($missingFileList | Out-String)
+    }
+    $logSummary | Out-File -FilePath $logFile -Append -Encoding UTF8
+    
+    if ($mismatchedFiles -eq 0 -and $missingFiles -eq 0) {
+        Write-Host "[OK] La integridad de todos los archivos ha sido verificada con exito." -ForegroundColor Green
+    } else {
+        Write-Error "Se encontraron problemas de integridad en la copia de seguridad."
+    }
+}
+
+# ===================================================================
+# --- MoDULO DE REUBICACIoN DE CARPETAS DE USUARIO ---
+# ===================================================================
+
+function Move-UserProfileFolders {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+    param()
+
+    Write-Log -LogLevel INFO -Message "Usuario entro al Modulo de Reubicacion de Carpetas de Usuario."
+
+    $folderMappings = @{
+        'Escritorio' = @{ RegValue = 'Desktop'; DefaultName = 'Desktop' }
+        'Documentos' = @{ RegValue = 'Personal'; DefaultName = 'Documents' }
+        'Descargas'  = @{ RegValue = '{374DE290-123F-4565-9164-39C4925E467B}'; DefaultName = 'Downloads' }
+        'Musica'     = @{ RegValue = 'My Music'; DefaultName = 'Music' }
+        'Imagenes'   = @{ RegValue = 'My Pictures'; DefaultName = 'Pictures' }
+        'Videos'     = @{ RegValue = 'My Video'; DefaultName = 'Videos' }
+    }
+    $registryPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
+
+    Write-Host "`n[+] Paso 1: Selecciona la carpeta RAIZ donde se crearan las nuevas carpetas de usuario." -ForegroundColor Yellow
+    Write-Host "    (Ejemplo: Si seleccionas 'D:\MisDatos', se crearan 'D:\MisDatos\Escritorio', 'D:\MisDatos\Documentos', etc.)" -ForegroundColor Gray
+    $newBasePath = Select-PathDialog -DialogType Folder -Title "Selecciona la NUEVA UBICACION BASE para tus carpetas"
+    
+    if ([string]::IsNullOrWhiteSpace($newBasePath)) {
+        Write-Warning "Operacion cancelada. No se selecciono una ruta de destino."
+        Start-Sleep -Seconds 2
+        return
+    }
+    
+    $currentUserProfilePath = $env:USERPROFILE
+    if ($newBasePath.StartsWith($currentUserProfilePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+         Write-Error "La nueva ubicacion base no puede estar dentro de tu perfil de usuario actual ('$currentUserProfilePath')."
+         Read-Host "`nOperacion abortada. Presiona Enter para volver..."
+         return
+    }
+
+    $selectableFolders = $folderMappings.Keys | Sort-Object
+    $folderItems = @()
+    foreach ($folderName in $selectableFolders) {
+        $folderItems += [PSCustomObject]@{
+            Name     = $folderName
+            Selected = $false
+        }
+    }
+
+    $choice = ''
+    while ($choice.ToUpper() -ne 'C' -and $choice.ToUpper() -ne 'V') {
+        Clear-Host
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        Write-Host "      Selecciona las Carpetas de Usuario a Reubicar    " -ForegroundColor Cyan
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        Write-Host "Nueva Ubicacion Base: $newBasePath" -ForegroundColor Yellow
+        Write-Host "Marca las carpetas que deseas mover a esta nueva ubicacion."
+        Write-Host ""
+        
+        for ($i = 0; $i -lt $folderItems.Count; $i++) {
+            $item = $folderItems[$i]
+            $status = if ($item.Selected) { "[X]" } else { "[ ]" }
+            $currentPath = (Get-ItemProperty -Path $registryPath -Name $folderMappings[$item.Name].RegValue -ErrorAction SilentlyContinue).($folderMappings[$item.Name].RegValue)
+            $currentPathExpanded = try { [Environment]::ExpandEnvironmentVariables($currentPath) } catch { $currentPath }
+            Write-Host ("   [{0}] {1} {2,-12} -> Actual: {3}" -f ($i + 1), $status, $item.Name, $currentPathExpanded)
+        }
+        
+        $selectedCount = $folderItems.Where({$_.Selected}).Count
+        if ($selectedCount -gt 0) {
+            Write-Host ""
+            Write-Host "   ($selectedCount carpeta(s) seleccionada(s))" -ForegroundColor Cyan
+        }
+
+        Write-Host "`n--- Acciones ---" -ForegroundColor Yellow
+        Write-Host "   [Numero] Marcar/Desmarcar        [T] Marcar Todas"
+        Write-Host "   [C] Continuar con la Reubicacion [N] Desmarcar Todas"
+        Write-Host ""
+        Write-Host "   [V] Cancelar y Volver" -ForegroundColor Red
+        Write-Host ""
+        $choice = Read-Host "Selecciona una opcion"
+
+        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $folderItems.Count) {
+            $index = [int]$choice - 1
+            $folderItems[$index].Selected = -not $folderItems[$index].Selected
+        } elseif ($choice.ToUpper() -eq 'T') { $folderItems.ForEach({$_.Selected = $true}) }
+        elseif ($choice.ToUpper() -eq 'N') { $folderItems.ForEach({$_.Selected = $false}) }
+        elseif ($choice.ToUpper() -notin @('C', 'V')) {
+             Write-Warning "Opcion no valida." ; Start-Sleep -Seconds 1
+        }
+    }
+
+    if ($choice.ToUpper() -eq 'V') {
+        Write-Host "Operacion cancelada por el usuario." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
+        return
+    }
+
+    $foldersToProcess = $folderItems | Where-Object { $_.Selected }
+    if ($foldersToProcess.Count -eq 0) {
+        Write-Warning "No se selecciono ninguna carpeta para mover."
+        Start-Sleep -Seconds 2
+        return
+    }
+
+    Clear-Host
+    Write-Host "--- RESUMEN DE LA REUBICACION ---" -ForegroundColor Cyan
+    Write-Host "Nueva Ubicacion Base: $newBasePath"
+    Write-Host "Se modificaran las siguientes carpetas:" -ForegroundColor Yellow
+    
+    $operations = @()
+    foreach ($folder in $foldersToProcess) {
+        $regValueName = $folderMappings[$folder.Name].RegValue
+        $currentPathReg = (Get-ItemProperty -Path $registryPath -Name $regValueName -ErrorAction SilentlyContinue).($regValueName)
+        $currentPathExpanded = try { [Environment]::ExpandEnvironmentVariables($currentPathReg) } catch { $currentPathReg }
+        $newFolderName = $folderMappings[$folder.Name].DefaultName
+        $newFullPath = Join-Path -Path $newBasePath -ChildPath $newFolderName
+
+        Write-Host " - $($folder.Name)"
+        Write-Host "     Ruta Actual Registrada: $currentPathExpanded" -ForegroundColor Gray
+        Write-Host "     NUEVA Ruta a Registrar: $newFullPath" -ForegroundColor Green
+        
+        $operations += [PSCustomObject]@{
+            Name = $folder.Name
+            RegValueName = $regValueName
+            CurrentPath = $currentPathExpanded
+            NewPath = $newFullPath
+        }
+    }
+
+    Write-Warning "`n¡ADVERTENCIA MUY IMPORTANTE!"
+    Write-Warning "- Cierra TODAS las aplicaciones que puedan estar usando archivos de estas carpetas."
+    Write-Warning "- Si eliges 'Mover y Registrar', el proceso puede tardar MUCHO tiempo."
+    Write-Warning "- NO interrumpas el proceso una vez iniciado."
+
+    Write-Host ""
+    Write-Host "--- TIPO DE ACCION ---" -ForegroundColor Yellow
+    Write-Host "   [M] Mover Archivos Y Actualizar Registro (Accion Completa, Lenta)"
+    Write-Host "   [R] Solo Actualizar Registro (Rapido - ¡ASEGURATE de que los archivos ya estan en el destino" -ForegroundColor Red
+    Write-Host "       o el destino esta vacio!)" -ForegroundColor Red
+    Write-Host "   [N] Cancelar"
+    
+    $actionChoice = Read-Host "`nElige el tipo de accion a realizar"
+    $actionType = ''
+
+    switch ($actionChoice.ToUpper()) {
+        'M' { $actionType = 'MoveAndRegister' }
+        'R' { $actionType = 'RegisterOnly' }
+        default {
+            Write-Host "Operacion cancelada por el usuario." -ForegroundColor Yellow
+            Start-Sleep -Seconds 2
+            return
+        }
+    }
+
+    Write-Warning "`nConfirmacion Final:"
+    $confirmation = Read-Host "¿Estas COMPLETAMENTE SEGURO de continuar con la accion '$actionType'? (Escribe 'SI' para confirmar)"
+    if ($confirmation -ne 'SI') {
+        Write-Host "Operacion cancelada por el usuario." -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
+        return
+    }
+
+    Write-Host "`n[+] Iniciando proceso. NO CIERRES ESTA VENTANA..." -ForegroundColor Yellow
+    Write-Log -LogLevel INFO -Message "REUBICACION: Iniciando proceso con accion '$actionType' para $($operations.Count) carpetas hacia '$newBasePath'."
+    $globalSuccess = $true
+    $explorerRestartNeeded = $false
+
+    foreach ($op in $operations) {
+        Write-Host "`n--- Procesando Carpeta: $($op.Name) ---" -ForegroundColor Cyan
+        
+        # 1. Crear directorio de destino (Siempre necesario)
+        Write-Host "  [1/3] Asegurando directorio de destino '$($op.NewPath)'..." -ForegroundColor Gray
+        $destinationDirCreated = $false
+        try {
+            if (-not (Test-Path $op.NewPath)) {
+                New-Item -Path $op.NewPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+                 Write-Host "  -> Directorio creado." -ForegroundColor Green
+            } else {
+                 Write-Host "  -> Directorio ya existe." -ForegroundColor Gray
+            }
+            $destinationDirCreated = $true
+        } catch {
+            Write-Error "  -> FALLO al crear el directorio de destino. Omitiendo carpeta '$($op.Name)'. Error: $($_.Exception.Message)"
+            Write-Log -LogLevel ERROR -Message "REUBICACION: Fallo al crear directorio '$($op.NewPath)'. Carpeta '$($op.Name)' omitida. Error: $($_.Exception.Message)"
+            $globalSuccess = $false
+            continue
+        }
+
+        # 2. Mover contenido (Solo si se eligio la accion completa)
+        $robocopySucceeded = $true # Asumimos exito si no se mueve nada
+        if ($actionType -eq 'MoveAndRegister') {
+            Write-Host "  [2/3] Moviendo contenido desde '$($op.CurrentPath)'..." -ForegroundColor Gray
+            Write-Warning "      (Esto puede tardar. Se abrira una ventana de Robocopy por cada carpeta)"
+            
+            $robocopyLogDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
+            $robocopyLogFile = Join-Path $robocopyLogDir "Robocopy_Move_$($op.Name)_$(Get-Date -Format 'yyyyMMddHHmmss').log"
+            $robocopyArgs = @(
+                "`"$($op.CurrentPath)`"" # Origen
+                "`"$($op.NewPath)`""    # Destino
+                "/MOVE"                 # Mueve archivos Y directorios (los elimina del origen)
+                "/E"                    # Copia subdirectorios, incluidos los vacios
+                "/COPY:DAT"             # Copia Datos, Atributos, Timestamps
+                "/DCOPY:T"              # Copia Timestamps de directorios
+                "/R:2"                  # Numero de reintentos en caso de fallo
+                "/W:5"                  # Tiempo de espera entre reintentos
+                "/MT:8"                 # Usa 8 hilos para copiar (puede acelerar en discos rapidos)
+                "/NJH"                  # No Job Header
+                "/NJS"                  # No Job Summary
+                "/NP"                   # No Progress
+                "/TEE"                  # Muestra en consola Y en log
+                "/LOG:`"$robocopyLogFile`"" # Guarda el log detallado
+            )
+            
+            Write-Log -LogLevel ACTION -Message "REUBICACION: Iniciando Robocopy /MOVE para '$($op.Name)' de '$($op.CurrentPath)' a '$($op.NewPath)'."
+            
+            $processInfo = Start-Process "robocopy.exe" -ArgumentList $robocopyArgs -Wait -PassThru -WindowStyle Minimized
+            
+            if ($processInfo.ExitCode -ge 8) {
+                Write-Error "  -> FALLO Robocopy al mover '$($op.Name)' (Codigo de salida: $($processInfo.ExitCode))."
+                Write-Error "     Los archivos pueden estar parcialmente movidos. Revisa el log: $robocopyLogFile"
+                Write-Log -LogLevel ERROR -Message "REUBICACION: Robocopy fallo para '$($op.Name)' (Codigo: $($processInfo.ExitCode)). Log: $robocopyLogFile"
+                $globalSuccess = $false
+                $robocopySucceeded = $false 
+                # NO continuamos con el cambio de registro si el movimiento fallo
+                continue 
+            } else {
+                 Write-Host "  -> Movimiento completado (Codigo Robocopy: $($processInfo.ExitCode))." -ForegroundColor Green
+                 Write-Log -LogLevel ACTION -Message "REUBICACION: Robocopy completado para '$($op.Name)' (Codigo: $($processInfo.ExitCode)). Log: $robocopyLogFile"
+            }
+        } else { # Si $actionType es 'RegisterOnly'
+             Write-Host "  [2/3] Omitiendo movimiento de archivos (Modo 'Solo Registrar')." -ForegroundColor Gray
+        }
+
+        # 3. Actualizar el Registro (Si la creacion del dir fue exitosa Y (Robocopy fue exitoso O se eligio 'Solo Registrar'))
+        if ($destinationDirCreated -and $robocopySucceeded) {
+            Write-Host "  [3/3] Actualizando la ruta en el Registro..." -ForegroundColor Gray
+            try {
+                Set-ItemProperty -Path $registryPath -Name $op.RegValueName -Value $op.NewPath -Type String -Force -ErrorAction Stop
+                Write-Host "  -> Registro actualizado exitosamente." -ForegroundColor Green
+                Write-Log -LogLevel ACTION -Message "REUBICACION: Registro actualizado para '$($op.Name)' a '$($op.NewPath)'."
+                $explorerRestartNeeded = $true
+            } catch {
+                Write-Error "  -> FALLO CRITICO al actualizar el registro para '$($op.Name)'. Error: $($_.Exception.Message)"
+                # Distinguir el mensaje de error segun la accion
+                if ($actionType -eq 'MoveAndRegister') {
+                    Write-Error "     La carpeta se movio, pero Windows aun apunta a la ubicacion antigua."
+                } else {
+                    Write-Error "     Windows no pudo ser actualizado para apuntar a la nueva ubicacion."
+                }
+                Write-Log -LogLevel ERROR -Message "REUBICACION CRITICO: Fallo al actualizar registro para '$($op.Name)' a '$($op.NewPath)'. Error: $($_.Exception.Message)"
+                $globalSuccess = $false
+            }
+        } else {
+             Write-Warning "  [3/3] Omitiendo actualizacion de registro debido a error previo en este paso."
+        }
+    }
+
+    Write-Host "`n--- PROCESO DE REUBICACION FINALIZADO ---" -ForegroundColor Cyan
+    if ($globalSuccess) {
+        Write-Host "[EXITO] Todas las carpetas seleccionadas se han procesado." -ForegroundColor Green
+        Write-Log -LogLevel INFO -Message "REUBICACION: Proceso finalizado con exito aparente para las carpetas seleccionadas (Accion: $actionType)."
+    } else {
+        Write-Error "[FALLO PARCIAL] Ocurrieron errores durante el proceso. Revisa los mensajes anteriores y los logs."
+        Write-Log -LogLevel ERROR -Message "REUBICACION: Proceso finalizado con uno o mas errores (Accion: $actionType)."
+    }
+
+    if ($explorerRestartNeeded) {
+        Write-Host "\nEs necesario reiniciar el Explorador de Windows (o cerrar sesion y volver a iniciar) para que los cambios surtan efecto." -ForegroundColor Yellow
+        $restartChoice = Read-Host "¿Deseas reiniciar el Explorador ahora? (S/N)"
+        if ($restartChoice.ToUpper() -eq 'S') {
+            Invoke-ExplorerRestart
+        }
+    }
+
+    Read-Host "`nPresiona Enter para volver al menu..."
+}
+
+# ===================================================================
+# --- MODULO DE RESPALDO DE DATOS ---
+# ===================================================================
+
+function Start-ProfileGuardMenu {
+    $mainChoice = ''
+    do {
+        # 1. Buscamos todas las tareas "Backup_*"
+        $allTasks = Get-ScheduledTask -ErrorAction SilentlyContinue
+        $scheduledBackups = @($allTasks | Where-Object { $_.TaskName -like "Backup_*" })
+        
+        # 2. Filtramos las activas
+        $activeScheduled = @($scheduledBackups | Where-Object { $_.State -eq "Ready" -or $_.State -eq "Running" })
+        
+        $nextScheduledRun = "No programado"
+        $nextTaskName = ""
+
+        if ($activeScheduled.Count -gt 0) {
+            try {
+                # Obtenemos la informacion de tiempo de TODAS las tareas y ordenamos por la mas cercana
+                $nextInfo = $activeScheduled | Get-ScheduledTaskInfo | Sort-Object -Property NextRunTime | Select-Object -First 1
+                
+                if ($nextInfo.NextRunTime) {
+                    $nextScheduledRun = $nextInfo.NextRunTime.ToString("yyyy-MM-dd HH:mm")
+                    $nextTaskName = "($($nextInfo.TaskName))"
+                }
+            } catch {
+                $nextScheduledRun = "Pendiente (calculando...)"
+            }
+        }
+
+        $headerInfo = "Usuario: $($env:USERNAME) | Equipo: $($env:COMPUTERNAME)"
+        Clear-Host
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        Write-Host ("      ProfileGuard v{0} by SOFTMAXTER" -f $script:Version) -ForegroundColor Cyan
+        Write-Host ($headerInfo.PadLeft(55)) -ForegroundColor Gray
+        Write-Host "=======================================================" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "--- Estado de Respaldo Automatico ---" -ForegroundColor Yellow
+        
+        if ($nextTaskName) {
+             Write-Host "   Proximo respaldo: $nextScheduledRun $nextTaskName"
+        } else {
+             Write-Host "   Proximo respaldo: $nextScheduledRun"
+        }
+        
+        Write-Host "   Respaldos automaticos activos: $([int]$activeScheduled.Count)"
+        Write-Host ""
+        Write-Host "--- Acciones de Respaldo ---" -ForegroundColor Yellow
+        Write-Host "   [1] Respaldo Manual Inmediato (Cifrado o Simple)"
+        Write-Host "       (Crea un respaldo Completo, Incremental o Diferencial ahora)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   [2] Configurar Respaldo Automatico Programado"
+        Write-Host "       (Establece horarios para respaldos sin intervencion)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   [3] Administrar Respaldos Existentes"
+        Write-Host "       (Ver, restaurar o eliminar respaldos anteriores)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   [4] Verificar Integridad de Respaldos"
+        Write-Host "       (Comprueba que tus respaldos esten completos y sin corrupcion)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "--- Herramientas ---" -ForegroundColor Yellow
+        Write-Host "   [5] Respaldo Simple (Sincronizacion Robocopy)" -ForegroundColor Green
+        Write-Host "       (Copia rapida y sin cifrar. Ideal para copias locales/NAS)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   [6] Reubicar Carpetas de Usuario (Escritorio, Documentos, etc.)" -ForegroundColor Yellow
+        Write-Host "       (Mueve tus carpetas personales a otra unidad o ubicacion)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "-------------------------------------------------------"
+        Write-Host ""
+        Write-Host "   [L] Ver Registro de Actividad (Log)" -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   [S] Salir del script" -ForegroundColor Red
+        Write-Host ""
+        
+        $mainChoice = Read-Host "Selecciona una opcion"
+        if ($mainChoice) { 
+             Write-Log -LogLevel INFO -Message "BACKUP: Usuario selecciono la opcion '$($mainChoice.ToUpper())'."
+        }
+        
+        switch ($mainChoice.ToUpper()) {
+            '1' { Invoke-BackupCreation }
+            '2' { Configure-AutoBackupSchedule }
+            '3' { Manage-ExistingBackups }
+            '4' { Verify-BackupIntegrity }
+            '5' { Invoke-SimpleRobocopyBackupMenu }
+            '6' { Move-UserProfileFolders }
+            'L' {
+                $parentDir = Split-Path -Parent $PSScriptRoot
+                $logFile = Join-Path -Path $parentDir -ChildPath "Logs\Registro.log"
+                if (Test-Path $logFile) {
+                    Write-Host "`n[+] Abriendo archivo de registro..." -ForegroundColor Green
+                    Start-Process notepad.exe -ArgumentList $logFile
+                } else {
+                    Write-Warning "El archivo de registro aun no ha sido creado. Realiza alguna accion primero."
+                    Read-Host "`nPresiona Enter para continuar..."
+                }
+            }
+            'S' { Write-Host "`nGracias por usar ProfileGuard by SOFTMAXTER!" }
+            default {
+                if (-not [string]::IsNullOrWhiteSpace($mainChoice)) {
+                    Write-Host "`n[ERROR] Opcion no valida. Por favor, intenta de nuevo." -ForegroundColor Red
+                    Read-Host "`nPresiona Enter para continuar..."
+                }
+            }
+        }
+
+    } while ($mainChoice.ToUpper() -ne 'S')
+
+    Write-Log -LogLevel INFO -Message "ProfileGuard cerrado por el usuario."
+    Write-Log -LogLevel INFO -Message "================================================="
+}
+
+# Solo iniciamos el menu si el script NO esta siendo importado (dot-sourced) por otro script
+if ($MyInvocation.InvocationName -ne '.') {
+    Start-ProfileGuardMenu
+}
