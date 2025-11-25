@@ -1,5 +1,7 @@
-# ProfileGuard 1.0 by SOFTMAXTER
-
+# ProfileGuard v1.0 by SOFTMAXTER
+<p align="center">
+  <img width="300" height="300" alt="ProfileGuard" src="https://github.com/user-attachments/assets/caa05243-4b2f-4974-a6de-970a2269ad5e" />
+</p>
 **ProfileGuard** es una suite de gestión de protección de datos de nivel empresarial escrita en PowerShell. Diseñada para administradores de sistemas y usuarios avanzados, esta herramienta proporciona una interfaz unificada para operaciones de respaldo complejas, sincronización de datos de alto rendimiento y gestión del entorno de usuario en sistemas Windows.
 
 ## 📖 Descripción General
