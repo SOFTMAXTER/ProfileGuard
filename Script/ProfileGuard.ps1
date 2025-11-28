@@ -34,100 +34,6 @@ param(
 
 $script:Version = "1.1.0"
 
-function Invoke-FullRepoUpdater {
-    # --- CONFIGURACION ---
-    $repoUser = "SOFTMAXTER"; $repoName = "ProfileGuard"; $repoBranch = "main"
-    $versionUrl = "https://raw.githubusercontent.com/$repoUser/$repoName/$repoBranch/version.txt"
-    $zipUrl = "https://github.com/$repoUser/$repoName/archive/refs/heads/$repoBranch.zip"
-    
-    try {
-        # Se intenta la operacion de red con un timeout corto para no retrasar el script si no hay conexion.
-        $remoteVersionStr = (Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -Headers @{"Cache-Control"="no-cache"}).Content.Trim()
-
-        if ([System.Version]$remoteVersionStr -gt [System.Version]$script:Version) {
-            # Solo si se encuentra una actualizacion, se le notifica al usuario.
-            Write-Host "¡Nueva version encontrada! Local: v$($script:Version) | Remota: v$remoteVersionStr" -ForegroundColor Green
-			Write-Log -LogLevel INFO -Message "UPDATER: Nueva versión detectada. Local: v$($script:Version) | Remota: v$remoteVersionStr"
-            $confirmation = Read-Host "¿Deseas descargar e instalar la actualizacion ahora? (S/N)"
-            if ($confirmation.ToUpper() -eq 'S') {
-                Write-Warning "El actualizador se ejecutara en una nueva ventana. NO LA CIERRES."
-				Write-Log -LogLevel ACTION -Message "UPDATER: Iniciando proceso de actualización. El script se cerrará."
-                $tempDir = Join-Path $env:TEMP "ProfileGuardUpdater"
-                if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force }
-                New-Item -Path $tempDir -ItemType Directory | Out-Null
-                $updaterScriptPath = Join-Path $tempDir "updater.ps1"
-                $installPath = (Split-Path -Path $PSScriptRoot -Parent)
-                $batchPath = Join-Path $installPath "Run.bat"
-
-                $updaterScriptContent = @"
-param(`$parentPID)
-
-`$ErrorActionPreference = 'Stop'
-`$Host.UI.RawUI.WindowTitle = 'PROCESO DE ACTUALIZACION DE ProfileGuard - NO CERRAR'
-try {
-    `$tempDir_updater = "$tempDir"
-    `$tempZip_updater = Join-Path "`$tempDir_updater" "update.zip"
-    `$tempExtract_updater = Join-Path "`$tempDir_updater" "extracted"
-
-    Write-Host "[PASO 1/6] Descargando la nueva version..." -ForegroundColor Yellow
-    Invoke-WebRequest -Uri "$zipUrl" -OutFile "`$tempZip_updater"
-
-    Write-Host "[PASO 2/6] Descomprimiendo archivos..." -ForegroundColor Yellow
-    Expand-Archive -Path "`$tempZip_updater" -DestinationPath "`$tempExtract_updater" -Force
-    `$updateSourcePath = (Get-ChildItem -Path "`$tempExtract_updater" -Directory).FullName
-
-    Write-Host "[PASO 3/6] Esperando a que el proceso principal de ProfileGuard finalice..." -ForegroundColor Yellow
-    try {
-        # Espera a que el PID que le pasamos termine antes de continuar
-        Get-Process -Id `$parentPID -ErrorAction Stop | Wait-Process -ErrorAction Stop
-    } catch {
-        # Si el proceso ya cerro (fue muy rapido), no es un error.
-        Write-Host "   - El proceso principal ya ha finalizado." -ForegroundColor Gray
-    }
-    # --- FIN DE LA MODIFICACIoN ---
-
-    Write-Host "[PASO 4/6] Eliminando archivos antiguos (excluyendo datos de usuario)..." -ForegroundColor Yellow # <--- MODIFICADO: Paso 4/6
-    `$itemsToRemove = Get-ChildItem -Path "$installPath" -Exclude "Logs", "Tools", "BackupScripts"
-    if (`$null -ne `$itemsToRemove) { Remove-Item -Path `$itemsToRemove.FullName -Recurse -Force }
-
-    Write-Host "[PASO 5/6] Instalando nuevos archivos..." -ForegroundColor Yellow # <--- MODIFICADO: Paso 5/6
-    Move-Item -Path "`$updateSourcePath\*" -Destination "$installPath" -Force
-    Get-ChildItem -Path "$installPath" -Recurse | Unblock-File
-
-    Write-Host "[PASO 6/6] ¡Actualizacion completada! Reiniciando la suite en 5 segundos..." -ForegroundColor Green # <--- MODIFICADO: Paso 6/6
-    Start-Sleep -Seconds 5
-    
-    Remove-Item -Path "`$tempDir_updater" -Recurse -Force
-    Start-Process -FilePath "$batchPath"
-}
-catch {
-    Write-Error "¡LA ACTUALIZACION HA FALLADO!"
-    Write-Error `$_
-    Read-Host "El proceso ha fallado. Presiona Enter para cerrar esta ventana."
-}
-"@
-                Set-Content -Path $updaterScriptPath -Value $updaterScriptContent -Encoding utf8
-                
-                # --- MODIFICADO: Se pasa el $PID actual como argumento al nuevo proceso ---
-                $launchArgs = "/c start `"PROCESO DE ACTUALIZACION DE ProfileGuard`" powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterScriptPath`" -parentPID $PID"
-                
-                Start-Process cmd.exe -ArgumentList $launchArgs -WindowStyle Hidden
-                exit # El script principal se cierra inmediatamente
-            } else {
-				Write-Host "Actualizacion omitida por el usuario." -ForegroundColor Yellow; Start-Sleep -Seconds 1
-				Write-Log -LogLevel INFO -Message "UPDATER: El usuario ha pospuesto la actualización."
-        	}
-        } 
-    }
-    catch {
-		# Silencioso si no hay conexion, no es un error.
-        return
-    }
-}
-
-# Ejecutar el actualizador DESPUES de definir la version
-Invoke-FullRepoUpdater
-
 function Write-Log {
     [CmdletBinding()]
     param(
@@ -154,6 +60,145 @@ function Write-Log {
         Write-Warning "No se pudo escribir en el archivo de log: $_"
     }
 }
+
+# --- FUNCION 1: Actualizador Automatico desde Repositorio (LOGICA CORREGIDA) ---
+function Invoke-FullRepoUpdater {
+    # --- CONFIGURACION ---
+    # Ajusta estos valores a tu repositorio real
+    $repoUser = "SOFTMAXTER"
+    $repoName = "ProfileGuard"
+    $repoBranch = "main" # O la rama que uses
+    
+    # URLs directas a los archivos "crudos" (raw)
+    $versionUrl = "https://raw.githubusercontent.com/$repoUser/$repoName/$repoBranch/version.txt"
+    $zipUrl = "https://github.com/$repoUser/$repoName/archive/refs/heads/$repoBranch.zip"
+    
+    $updateAvailable = $false
+    $remoteVersionStr = ""
+
+    try {
+        Write-Host "Buscando actualizaciones..." -ForegroundColor Gray
+        # Se intenta la operacion de red con un timeout corto para no retrasar el script si no hay conexion.
+        # Usamos -UseBasicParsing para mayor compatibilidad y un timeout de 5 segundos.
+        $response = Invoke-WebRequest -Uri $versionUrl -UseBasicParsing -Headers @{"Cache-Control"="no-cache"} -TimeoutSec 5 -ErrorAction Stop
+        $remoteVersionStr = $response.Content.Trim()
+
+        # Comparacion de versiones simple (como cadenas)
+        # Esto asume que el formato es siempre X.Y.Z y que versiones mayores tienen numeros mayores
+        if ($remoteVersionStr -ne $script:Version) {
+            $updateAvailable = $true
+        }
+    }
+    catch {
+        # Silencioso si no hay conexion o falla la peticion, no es un error critico.
+        Write-Host "No se pudo buscar actualizaciones (sin conexion o error del servidor)." -ForegroundColor Gray
+        return
+    }
+
+    # --- Si hay una actualizacion, preguntamos al usuario ---
+    if ($updateAvailable) {
+        Write-Host "`n¡Nueva version encontrada!" -ForegroundColor Green
+        Write-Host "Version Local: v$($script:Version)" -ForegroundColor Gray
+        Write-Host "Version Remota: v$remoteVersionStr" -ForegroundColor Yellow
+        Write-Log -LogLevel INFO -Message "UPDATER: Nueva versión detectada. Local: v$($script:Version) | Remota: v$remoteVersionStr"
+        
+        Write-Host ""
+        $confirmation = Read-Host "¿Deseas descargar e instalar la actualizacion ahora? (S/N)"
+        
+        if ($confirmation.ToUpper() -eq 'S') {
+            Write-Warning "`nEl actualizador se ejecutara en una nueva ventana."
+            Write-Warning "Este script principal se cerrara para permitir la actualizacion."
+            Write-Log -LogLevel ACTION -Message "UPDATER: Iniciando proceso de actualización. El script se cerrará."
+            
+            # --- Preparar el script del actualizador externo ---
+            $tempDir = Join-Path $env:TEMP "ProfileGuardUpdater"
+            if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force }
+            New-Item -Path $tempDir -ItemType Directory | Out-Null
+            $updaterScriptPath = Join-Path $tempDir "updater.ps1"
+            $installPath = (Split-Path -Path $PSScriptRoot -Parent)
+            $batchPath = Join-Path $installPath "Run.bat"
+
+            # Contenido del script temporal que hara el trabajo sucio
+            $updaterScriptContent = @"
+param(`$parentPID)
+`$ErrorActionPreference = 'Stop'
+`$Host.UI.RawUI.WindowTitle = 'PROCESO DE ACTUALIZACION DE ProfileGuard - NO CERRAR'
+
+# Funcion auxiliar para logs del actualizador
+function Write-UpdateLog { param([string]`$msg) Write-Host "`n`$msg" -ForegroundColor Cyan }
+
+try {
+    `$tempDir_updater = "$tempDir"
+    `$tempZip_updater = Join-Path "`$tempDir_updater" "update.zip"
+    `$tempExtract_updater = Join-Path "`$tempDir_updater" "extracted"
+
+    Write-UpdateLog "[PASO 1/6] Descargando la nueva version v$remoteVersionStr..."
+    Invoke-WebRequest -Uri "$zipUrl" -OutFile "`$tempZip_updater"
+
+    Write-UpdateLog "[PASO 2/6] Descomprimiendo archivos..."
+    Expand-Archive -Path "`$tempZip_updater" -DestinationPath "`$tempExtract_updater" -Force
+    # GitHub extrae en una subcarpeta con el nombre del repo y la rama (ej: ProfileGuard-main)
+    `$updateSourcePath = (Get-ChildItem -Path "`$tempExtract_updater" -Directory | Select-Object -First 1).FullName
+
+    Write-UpdateLog "[PASO 3/6] Esperando a que el proceso principal finalice..."
+    try {
+        # Espera a que el PID del script principal termine
+        Get-Process -Id `$parentPID -ErrorAction Stop | Wait-Process -ErrorAction Stop -Timeout 30
+    } catch {
+        # Si el proceso ya cerro o paso el timeout, seguimos
+        Write-Host "   - Proceso principal finalizado." -ForegroundColor Gray
+    }
+
+    Write-UpdateLog "[PASO 4/6] Preparando instalacion (limpiando archivos antiguos)..."
+    # Excluimos carpetas de datos del usuario para no borrarlas
+    `$itemsToRemove = Get-ChildItem -Path "$installPath" -Exclude "Logs", "Tools", "BackupScripts", "*.cred", "manifest.json"
+    if (`$null -ne `$itemsToRemove) { 
+        Remove-Item -Path `$itemsToRemove.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-UpdateLog "[PASO 5/6] Instalando nuevos archivos..."
+    # Movemos todo el contenido de la carpeta extraida a la raiz de instalacion
+    Copy-Item -Path "`$updateSourcePath\*" -Destination "$installPath" -Recurse -Force
+    
+    # Desbloqueamos los archivos descargados por si acaso
+    Get-ChildItem -Path "$installPath" -Recurse | Unblock-File -ErrorAction SilentlyContinue
+
+    Write-UpdateLog "[PASO 6/6] ¡Actualizacion completada con exito!"
+    Write-Host "`nReiniciando ProfileGuard en 5 segundos..." -ForegroundColor Green
+    Start-Sleep -Seconds 5
+    
+    # Limpieza y reinicio
+    Remove-Item -Path "`$tempDir_updater" -Recurse -Force -ErrorAction SilentlyContinue
+    Start-Process -FilePath "$batchPath"
+}
+catch {
+    Write-Error "`n¡ERROR CRITICO DURANTE LA ACTUALIZACION!"
+    Write-Error "Detalles: `$(`$_.Exception.Message)"
+    Write-Warning "Tu instalacion puede estar incompleta."
+    Write-Warning "Por favor, descarga la ultima version manualmente desde el repositorio."
+    Read-Host "`nPresiona Enter para cerrar esta ventana..."
+}
+"@
+            # Guardar el script del actualizador
+            $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+            [System.IO.File]::WriteAllText($updaterScriptPath, $updaterScriptContent, $utf8NoBom)
+            
+            # Lanzar el actualizador en una nueva ventana de CMD/PowerShell y cerrar este script
+            $launchArgs = "/c start `"PROCESO DE ACTUALIZACION`" powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterScriptPath`" -parentPID $PID"
+            Start-Process cmd.exe -ArgumentList $launchArgs -WindowStyle Normal
+            
+            # Cerrar el script principal inmediatamente
+            exit
+        } else {
+            Write-Host "`nActualizacion omitida por el usuario." -ForegroundColor Yellow
+            Write-Log -LogLevel INFO -Message "UPDATER: El usuario ha pospuesto la actualización a v$remoteVersionStr."
+            Start-Sleep -Seconds 1
+        }
+    }
+}
+
+# Ejecutar el actualizador DESPUES de definir la version
+Invoke-FullRepoUpdater
 
 # --- Verificacion de Privilegios de Administrador ---
 if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
