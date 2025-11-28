@@ -1,4 +1,4 @@
-# ProfileGuard v1.1.0 by SOFTMAXTER
+# ProfileGuard v1.1 by SOFTMAXTER
 <p align="center">
   <img width="300" height="300" alt="ProfileGuard" src="https://github.com/user-attachments/assets/caa05243-4b2f-4974-a6de-970a2269ad5e" />
 </p>
