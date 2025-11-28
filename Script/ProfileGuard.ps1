@@ -3,7 +3,7 @@
     Una suite de gestión de respaldos de nivel profesional para archivar, cifrar (AES-256), reubicar perfiles y automatizar la protección de datos.
 
 .DESCRIPTION
-    ProfileGuard v1.0 es una solución de protección de datos integral que unifica múltiples vectores de seguridad en una sola herramienta:
+    ProfileGuard es una solución de protección de datos integral que unifica múltiples vectores de seguridad en una sola herramienta:
 
     1.  [Respaldo Avanzado] Motor basado en 7-Zip para archivos versionados (Full, Incremental, Diferencial) con cifrado militar AES-256 y seguimiento mediante 'manifest.json'.
     2.  [Sincronización] Replicación de alta velocidad (Robocopy) con modos Espejo/Copia y validación de integridad por Hash SHA-256.
@@ -16,12 +16,23 @@
     SOFTMAXTER
 
 .VERSION
-    1.0.0
+    1.1.0
 #>
 
-$script:Version = "1.0.0"
+[CmdletBinding()]
+param(
+    [switch]$EngineMode, # Si está presente, solo se ejecuta el motor
 
-# --- INICIO DEL MODULO DE AUTO-ACTUALIZACION ---
+    # Parámetros para el motor (solo se usan si -EngineMode está presente)
+    [string]$SourcePath,
+    [string]$DestinationPath,
+    [string]$BackupType,
+    [bool]$IsEncrypted,
+    [string]$PlainTextPassword,
+    [string]$LogContext
+)
+
+$script:Version = "1.1.0"
 
 function Invoke-FullRepoUpdater {
     # --- CONFIGURACION ---
@@ -36,9 +47,11 @@ function Invoke-FullRepoUpdater {
         if ([System.Version]$remoteVersionStr -gt [System.Version]$script:Version) {
             # Solo si se encuentra una actualizacion, se le notifica al usuario.
             Write-Host "¡Nueva version encontrada! Local: v$($script:Version) | Remota: v$remoteVersionStr" -ForegroundColor Green
+			Write-Log -LogLevel INFO -Message "UPDATER: Nueva versión detectada. Local: v$($script:Version) | Remota: v$remoteVersionStr"
             $confirmation = Read-Host "¿Deseas descargar e instalar la actualizacion ahora? (S/N)"
             if ($confirmation.ToUpper() -eq 'S') {
                 Write-Warning "El actualizador se ejecutara en una nueva ventana. NO LA CIERRES."
+				Write-Log -LogLevel ACTION -Message "UPDATER: Iniciando proceso de actualización. El script se cerrará."
                 $tempDir = Join-Path $env:TEMP "ProfileGuardUpdater"
                 if (Test-Path $tempDir) { Remove-Item -Path $tempDir -Recurse -Force }
                 New-Item -Path $tempDir -ItemType Directory | Out-Null
@@ -102,6 +115,7 @@ catch {
                 exit # El script principal se cierra inmediatamente
             } else {
 				Write-Host "Actualizacion omitida por el usuario." -ForegroundColor Yellow; Start-Sleep -Seconds 1
+				Write-Log -LogLevel INFO -Message "UPDATER: El usuario ha pospuesto la actualización."
         	}
         } 
     }
@@ -460,11 +474,11 @@ function Configure-AutoBackupSchedule {
     
     # --- 1. Origen, Destino ---
     Write-Host "`n[1/5] Selecciona la CARPETA de Origen." -ForegroundColor Yellow
-    $sourcePath = Select-PathDialog -DialogType 'Folder' -Title "Origen"
+    $sourcePath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la CARPETA de Origen"
     if ([string]::IsNullOrWhiteSpace($sourcePath)) { return }
     
     Write-Host "`n[2/5] Selecciona la CARPETA de Destino." -ForegroundColor Yellow
-    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Destino"
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la CARPETA de Destino"
     if ([string]::IsNullOrWhiteSpace($destinationPath)) { return }
     
     # --- 2. Frecuencia ---
@@ -511,98 +525,93 @@ function Configure-AutoBackupSchedule {
         Write-Warning "Solo ESTE usuario en ESTA PC podra ejecutar el respaldo."
         $password = Generate-SecurePassword
         
-        # Guardar credencial cifrada
+        # Guardar credencial cifrada (ASCII)
         $secureString = ConvertTo-SecureString $password -AsPlainText -Force
         $encryptedContent = $secureString | ConvertFrom-SecureString
         $credFilePath = Join-Path $scriptsDir "$taskName.cred"
-        Set-Content -Path $credFilePath -Value $encryptedContent
+        Set-Content -Path $credFilePath -Value $encryptedContent -Encoding Ascii
         
         Write-Host "Contrasena generada: $password" -ForegroundColor Magenta
         Write-Host "Archivo de credencial segura creado en: $credFilePath" -ForegroundColor Gray
         Read-Host "Anota la contrasena y presiona Enter..."
     }
 
-    # --- 4. Generar script (Actualizado para leer .cred) ---
+    # --- 4. Generar script ---
     $backupScriptPath = Join-Path -Path $scriptsDir -ChildPath "$taskName.ps1"
     $mainScriptFullPath = $PSScriptRoot
+    $isEncryptedBoolStr = if ($isEncrypted) { '$true' } else { '$false' }
     
-    $scriptContent = @"
-`$ErrorActionPreference = 'Stop'
+    # Variable auxiliar para insertar el caracter '$' de forma segura sin usar acentos graves.
+    $d = "$"
 
-# --- PARAMETROS ---
-`$sourcePath = '$sourcePath'
-`$destinationPath = '$destinationPath'
-`$backupType = '$Type'
-`$isEncrypted = [bool]'$isEncrypted'
-`$mainScriptToImport = Join-Path '$mainScriptFullPath' 'ProfileGuard.ps1'
+    # --- INICIO DE LA PLANTILLA DEL SCRIPT GENERADO ---
+    $scriptContent = @"
+${d}ErrorActionPreference = 'Stop'
+
+# --- CONFIGURACION DE LOGS ---
+${d}logDir = Join-Path ${d}env:ProgramData 'ProfileGuard_Logs'
+${d}taskLogFile = Join-Path ${d}logDir 'Backup_Log.txt'
+try { if (-not (Test-Path ${d}logDir)) { New-Item -Path ${d}logDir -ItemType Directory -Force -ErrorAction Stop | Out-Null } } catch { exit 1 }
+function Write-TaskLog { param([string]${d}Message) "${d}(Get-Date) - ${d}Message" | Out-File -FilePath ${d}taskLogFile -Append -Encoding utf8 }
+
+Write-TaskLog "--- Iniciando Tarea '$($taskName.Replace("'", "''"))' ---"
+
+# --- DEFINICION DE VARIABLES ---
+${d}mainScriptToImport = '$($mainScriptFullPath.Replace("'", "''"))\ProfileGuard.ps1'
+${d}taskSourcePath = '$($sourcePath.Replace("'", "''"))'
+${d}taskDestinationPath = '$($destinationPath.Replace("'", "''"))'
+${d}taskBackupType = '$Type'
+${d}taskIsEncrypted = $isEncryptedBoolStr
 
 # --- SEGURIDAD DPAPI ---
-`$passwordArg = `$null
-`$ptr = [System.IntPtr]::Zero  # Inicializamos el puntero en cero
-
-if (`$isEncrypted) {
-    `$credFile = Join-Path "`$PSScriptRoot" '$taskName.cred'
-    if (Test-Path `$credFile) {
-        try {
-            `$encryptedData = Get-Content `$credFile -Raw
-            # Desciframos usando la identidad del usuario actual (DPAPI)
-            `$secureString = `$encryptedData | ConvertTo-SecureString
-            
-            # Convertimos a texto plano en memoria no administrada (BSTR)
-            `$ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(`$secureString)
-            `$passwordArg = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(`$ptr)
-        } catch {
-             Throw "Error al descifrar la credencial: `$_"
-        }
-    } else {
-        Throw "No se encontro el archivo de credencial: `$credFile"
-    }
-}
-
-`$logDir = Join-Path `$env:LOCALAPPDATA 'ProfileGuard_Logs'
-`$logFile = Join-Path `$logDir 'Backup_Auto_Log.txt'
-if (-not (Test-Path `$logDir)) { New-Item -Path `$logDir -ItemType Directory -Force | Out-Null }
-
-function Write-TaskLog { param([string]`$Message) "`$(Get-Date) - `$Message" | Out-File -FilePath `$logFile -Append -Encoding utf8 }
-Write-TaskLog "--- Iniciando Respaldo Automatico '$taskName' ---"
+${d}passwordArg = ${d}null
+${d}ptr = ${d}null
 
 try {
-    Write-TaskLog "INFO: Importando motor..."
-    
-    # IMPORTANTE: Esto requiere que ProfileGuard.ps1 tenga el bloqueo de menú (if MyInvocation...)
-    . "`$mainScriptToImport"
-    
-    # Redefinimos Write-Log para que apunte al log de la tarea y no a consola
-    function Write-Log { [CmdletBinding()] param([string]`$LogLevel, [string]`$Message) Write-TaskLog "[\$LogLevel] \$Message" }
+    if (${d}taskIsEncrypted) {
+        Write-TaskLog "Descifrando credencial..."
+        ${d}credFile = Join-Path "${d}PSScriptRoot" '$($taskName.Replace("'", "''")).cred'
+        if (-not (Test-Path ${d}credFile)) { throw "Archivo de credencial no encontrado: ${d}credFile" }
+        
+        ${d}encryptedData = (Get-Content ${d}credFile -Raw).Trim()
+        ${d}secureString = ${d}encryptedData | ConvertTo-SecureString -ErrorAction Stop
+        ${d}ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(${d}secureString)
+        ${d}passwordArg = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(${d}ptr)
+    }
 
-    Write-TaskLog "INFO: Ejecutando motor..."
-    `$success = Invoke-ProfileGuardBackupEngine -SourcePath `$sourcePath -DestinationPath `$destinationPath -BackupType `$backupType -IsEncrypted `$isEncrypted -PlainTextPassword `$passwordArg -LogContext "AUTO: $taskName"
-    
-    if (`$success) { Write-TaskLog "EXITO." } else { Write-TaskLog "FALLO." }
+    Write-TaskLog "Importando motor principal y ejecutando respaldo..."
+
+    if (-not (Test-Path ${d}mainScriptToImport)) { throw "Script principal no encontrado en: ${d}mainScriptToImport" }
+    . "${d}mainScriptToImport"
+
+    ${d}success = Invoke-ProfileGuardBackupEngine -SourcePath ${d}taskSourcePath -DestinationPath ${d}taskDestinationPath -BackupType ${d}taskBackupType -IsEncrypted ${d}taskIsEncrypted -PlainTextPassword ${d}passwordArg -LogContext 'AUTO:$($taskName.Replace("'", "''"))'
+
+    if (${d}success) { Write-TaskLog "EXITO. El respaldo finalizo correctamente." } else { Write-TaskLog "FALLO. El motor reporto un error." }
 
 } catch {
-    Write-TaskLog "ERROR CRITICO: `$( `$_.Exception.Message)"
+    Write-TaskLog "ERROR CRITICO: ${d}(${d}_.Exception.Message)"
+    Write-Host "ERROR CRITICO: ${d}(${d}_.Exception.Message)" -ForegroundColor Red
 } finally {
-    # --- LIMPIEZA DE SEGURIDAD ---
-    # Limpiamos la contraseña de la memoria RAM inmediatamente
-    if (`$ptr -ne [System.IntPtr]::Zero) {
-        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR(`$ptr)
-        `$ptr = [System.IntPtr]::Zero
-    }
-    `$passwordArg = `$null
-    `$secureString = `$null
-    
+    # --- LIMPIEZA Y CIERRE ROBUSTO ---
+    ${d}ptr = ${d}null
+    ${d}passwordArg = ${d}null
     [GC]::Collect()
-    Write-TaskLog "--- Fin ---`n"
+    
+    try {
+        Write-TaskLog "--- Fin ---`n"
+    } catch {
+    }
 }
 "@
+    # --- FIN DE LA PLANTILLA ---
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($backupScriptPath, $scriptContent, $utf8NoBom)    
     
-    Set-Content -Path $backupScriptPath -Value $scriptContent -Encoding UTF8
-    
-    # --- 5. Crear la Tarea Programada ---
+	# --- 5. Crear la Tarea Programada ---
     try {
         Write-Host "`n[+] Creando tarea programada..." -ForegroundColor Yellow
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$backupScriptPath`""
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$backupScriptPath`""
         
         $trigger = $null
         if ($schedule.Frequency -eq 'Daily') { $trigger = New-ScheduledTaskTrigger -Daily -At $schedule.Time }
@@ -613,6 +622,7 @@ try {
         Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
         
         Write-Host "`n[OK] Tarea creada." -ForegroundColor Green
+		Write-Log -LogLevel ACTION -Message "AUTO-BACKUP: Nueva tarea programada creada: '$taskName'. Frecuencia: $($schedule.Frequency) a las $($schedule.Time). Tipo: $Type. Cifrado: $isEncrypted."
         if ($isEncrypted) { Write-Warning "Archivo .cred generado. NO LO BORRES o la tarea fallara." }
         
     } catch {
@@ -624,14 +634,297 @@ try {
     Read-Host "`nPresiona Enter..."
 }
 
-# --- FUNCION 4: Administrar Respaldos ---
+# ===================================================================
+# --- NUEVAS FUNCIONES PARA EDICION DE TAREAS ---
+# ===================================================================
+
+# --- FUNCION AUXILIAR: Traducir mascara de bits de dias a texto español ---
+function Get-ReadableDays {
+    param([int]$DaysBitmask)
+    $days = @()
+    # Estos son los valores de bit estándar del Programador de Tareas
+    if ($DaysBitmask -band 1)  { $days += 'Domingo' }
+    if ($DaysBitmask -band 2)  { $days += 'Lunes' }
+    if ($DaysBitmask -band 4)  { $days += 'Martes' }
+    if ($DaysBitmask -band 8)  { $days += 'Miércoles' }
+    if ($DaysBitmask -band 16) { $days += 'Jueves' }
+    if ($DaysBitmask -band 32) { $days += 'Viernes' }
+    if ($DaysBitmask -band 64) { $days += 'Sabado' }
+    
+    if ($days.Count -eq 0) { return "Desconocido ($DaysBitmask)" }
+    return ($days -join ', ')
+}
+
+# --- FUNCION AUXILIAR: Seleccionar una Tarea Existente ---
+function Select-ProfileGuardTask {
+    Write-Host "`nBuscando tareas programadas de ProfileGuard..." -ForegroundColor Gray
+    $allTasks = Get-ScheduledTask -ErrorAction SilentlyContinue
+    # Filtramos solo las tareas creadas por este script (prefijo Backup_)
+    $scheduledBackups = @($allTasks | Where-Object { $_.TaskName -like "Backup_*" } | Sort-Object TaskName)
+
+    if ($scheduledBackups.Count -eq 0) {
+        Write-Warning "No se encontraron tareas programadas activas de ProfileGuard."
+        return $null
+    }
+
+    Write-Host "Tareas encontradas:" -ForegroundColor Cyan
+	Write-Host ""
+    for ($i = 0; $i -lt $scheduledBackups.Count; $i++) {
+        $task = $scheduledBackups[$i]
+        try {
+            $info = Get-ScheduledTaskInfo -TaskName $task.TaskName -ErrorAction Stop
+            $nextRun = if ($info.NextRunTime) { $info.NextRunTime.ToString("yyyy-MM-dd HH:mm") } else { "Deshabilitada/No programada" }
+        } catch {
+             $nextRun = "Error al leer info"
+        }
+
+        Write-Host ("   [{0}] {1,-30} | Estado: {2,-10} | Prox. Ejecucion: {3}" -f ($i + 1), $task.TaskName, $task.State, $nextRun)
+    }
+    Write-Host ""
+    Write-Host "   [V] Volver al menu anterior" -ForegroundColor Red
+
+    $selection = Read-Host "`nSelecciona el numero de la tarea a editar"
+    
+    if ($selection.ToUpper() -eq 'V') { return $null }
+
+    if ($selection -match '^\d+$' -and [int]$selection -ge 1 -and [int]$selection -le $scheduledBackups.Count) {
+        return $scheduledBackups[[int]$selection - 1]
+    } else {
+        Write-Warning "Seleccion invalida."
+        Start-Sleep -Seconds 1
+        return $null
+    }
+}
+
+# --- FUNCION PRINCIPAL: Editar Tarea Programada ---
+function Edit-ScheduledTask {
+    param()
+    Clear-Host
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "       Editar/Eliminar Tarea Programada" -ForegroundColor Cyan
+    Write-Host "=======================================================" -ForegroundColor Cyan
+
+    # 1. Seleccionar la tarea
+    $targetTask = Select-ProfileGuardTask
+    if ($null -eq $targetTask) { return }
+
+    $taskName = $targetTask.TaskName
+
+    # --- LEER CONFIGURACION ACTUAL ---
+    Write-Host "`nLeyendo configuracion actual de '$taskName'..." -ForegroundColor Gray
+
+    # A) Leer del Programador de Tareas (Trigger)
+    $currentTrigger = $targetTask.Triggers[0]
+    $scheduleSummary = "Desconocido"
+    
+    try {
+        $timeStr = "Desconocida"
+        if ($currentTrigger.StartBoundary) {
+             $timeStr = $currentTrigger.StartBoundary.split('T')[1].Substring(0,5)
+        }
+
+        if ($currentTrigger.Repetition.Interval) {
+             $scheduleSummary = "Frecuencia compleja (no editable aqui)"
+        } elseif ($null -ne $currentTrigger.DaysOfWeek) {
+             # Usamos la funcion auxiliar para traducir los dias
+             $daysReadable = Get-ReadableDays -DaysBitmask ([int]$currentTrigger.DaysOfWeek)
+             $scheduleSummary = "Semanal ($daysReadable) a las $timeStr"
+        } else {
+             $scheduleSummary = "Diario a las $timeStr"
+        }
+    } catch {
+        $scheduleSummary = "Error al leer el horario: $($_.Exception.Message)"
+    }
+
+    # B) Leer del script generado (.ps1) - LECTURA MEJORADA CON UTF8
+    $actionArgs = $targetTask.Actions[0].Arguments
+    $generatedScriptPath = $null
+    $currentBackupType = "Desconocido (No se pudo leer script)"
+    $currentIsEncrypted = "Desconocido"
+    $scriptContentLines = $null
+
+    # 1. Encontrar la ruta del script
+    if ($actionArgs -match '-File\s+"([^"]+)"') {
+        $generatedScriptPath = $matches[1]
+        if (Test-Path $generatedScriptPath) {
+            # 2. Leer el script linea por linea FORZANDO UTF8
+            $scriptContentLines = Get-Content $generatedScriptPath -Encoding UTF8
+            
+            # 3. Buscar las variables linea por linea
+            foreach ($line in $scriptContentLines) {
+            # Eliminamos espacios al principio y al final para asegurar la comparacion
+            $trimmedLine = $line.Trim()
+    
+           # --- Deteccion del TIPO de respaldo ---
+           # Busca la linea exacta: $taskBackupType = 'Algo'
+           if ($trimmedLine.StartsWith("`$taskBackupType = '") -and $trimmedLine.EndsWith("'")) {
+               # Reemplaza el inicio y el fin para quedarse solo con el valor entre comillas
+               $currentBackupType = $trimmedLine.Replace("`$taskBackupType = '", "").Replace("'", "")
+            }
+    
+            # --- Deteccion del ESTADO DE CIFRADO (Version Definitiva) ---
+            # Verifica si la linea comienza con la variable que buscamos
+            if ($trimmedLine.StartsWith("`$taskIsEncrypted =")) {
+        
+                # Formato literal $true o $false (Generador actual)
+                # Usamos una comparacion directa y simple que no distingue mayusculas/minusculas
+                if ($trimmedLine -like "*`$true*") {
+                    $currentIsEncrypted = "Si"
+                }
+                elseif ($trimmedLine -like "*`$false*") {
+                    $currentIsEncrypted = "No"
+                }
+            }
+        }
+        } else {
+            Write-Error "CRITICO: El script asociado a la tarea no existe: $generatedScriptPath"
+            Write-Warning "Se recomienda ELIMINAR esta tarea rota."
+        }
+    }
+
+    # --- MENU DE EDICION ---
+    Clear-Host
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host "       Editando Tarea: $taskName" -ForegroundColor Cyan
+    Write-Host "=======================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Configuracion Actual:" -ForegroundColor Yellow
+    Write-Host " - Horario: $scheduleSummary"
+    Write-Host " - Tipo:    $currentBackupType"
+    Write-Host " - Cifrado: $currentIsEncrypted (No editable)"
+    Write-Host ""
+    Write-Host "--- Acciones ---" -ForegroundColor Yellow
+    Write-Host "   [1] Cambiar Horario / Frecuencia (Trigger)"
+    Write-Host "   [2] Cambiar Tipo de Respaldo (Full/Inc/Diff)"
+    Write-Host ""
+    Write-Host "   [D] ELIMINAR Tarea Completamente (Tarea + Scripts)" -ForegroundColor Red
+    Write-Host "   [V] Volver" -ForegroundColor Gray
+    Write-Host ""
+
+    $editChoice = Read-Host "Selecciona una opcion"
+
+    switch ($editChoice.ToUpper()) {
+        '1' { # --- CAMBIAR HORARIO (TRIGGER) ---
+            Write-Host "`n--- Nuevo Horario ---" -ForegroundColor Yellow
+            Write-Host "   [1] Diario  [2] Semanal"
+            $freqChoice = Read-Host "Elige (1-2)"
+            
+            $newTrigger = $null
+            $timeInput = ""
+            $validTime = $false
+             while (-not $validTime) {
+                $timeInput = Read-Host "Nueva Hora (HH:mm)"
+                if ($timeInput -match '^(?:[01]\d|2[0-3]):[0-5]\d$') { $validTime = $true }
+            }
+
+            if ($freqChoice -eq '1') {
+                $newTrigger = New-ScheduledTaskTrigger -Daily -At $timeInput
+            } else {
+                $dayChoice = Read-Host "Dia (1=Lunes ... 7=Domingo)"
+                $dayOfWeek = switch($dayChoice) { '1' { 'Monday' } '2' { 'Tuesday' } '3' { 'Wednesday' } '4' { 'Thursday' } '5' { 'Friday' } '6' { 'Saturday' } '7' { 'Sunday' } default { 'Sunday' } }
+                $newTrigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $dayOfWeek -At $timeInput
+            }
+
+            try {
+                # Se requieren privilegios elevados para Set-ScheduledTask
+                Set-ScheduledTask -TaskName $taskName -Trigger $newTrigger -ErrorAction Stop | Out-Null
+                Write-Host "`n[EXITO] Horario de la tarea actualizado." -ForegroundColor Green
+				Write-Log -LogLevel ACTION -Message "EDIT-TASK: Se actualizó el horario de la tarea '$taskName'."
+            } catch {
+                Write-Error "Fallo al actualizar el horario de la tarea. Asegurate de correr como Administrador."
+                Write-Error $_.Exception.Message
+            }
+        }
+        '2' { # --- CAMBIAR TIPO DE RESPALDO (CORREGIDO NOMBRE DE VARIABLE) ---
+            if ($null -eq $scriptContentLines) { Write-Warning "No se puede editar el tipo porque no se pudo leer el script generado."; return }
+
+            Write-Host "`n--- Nuevo Tipo de Respaldo ---" -ForegroundColor Yellow
+            Write-Host "Actual: $currentBackupType"
+            Write-Host "   [1] Incremental  [2] Diferencial  [3] Completo"
+            $typeChoice = Read-Host "Elige (1-3)"
+            $newType = switch($typeChoice) { '1' { 'Incremental' } '2' { 'Differential' } '3' { 'Full' } default { $null } }
+
+            if ($newType -and $newType -ne $currentBackupType) {
+                try {
+                    # Usamos el mismo metodo de lectura para encontrar la linea y reemplazarla
+                    $newScriptLines = @()
+                    foreach ($line in $scriptContentLines) {
+                        # Buscamos la variable correcta con el prefijo '$task'
+                        # CORREGIDO AQUI:
+                        if ($line.Trim().StartsWith("`$taskBackupType = '")) { # <--- CORREGIDO NOMBRE VARIABLE
+                            # Reemplazamos la linea completa con el nuevo valor usando el nombre correcto
+                            # CORREGIDO AQUI TAMBIEN:
+                            $newScriptLines += "`$taskBackupType = '$newType'" # <--- CORREGIDO NOMBRE VARIABLE
+                        } else {
+                            $newScriptLines += $line
+                        }
+                    }
+                    
+                    # Guardamos usando .NET para asegurar UTF-8 sin BOM
+                    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                    [System.IO.File]::WriteAllLines($generatedScriptPath, $newScriptLines, $utf8NoBom)
+
+                    Write-Host "`n[EXITO] Tipo de respaldo actualizado a '$newType' en el script generador." -ForegroundColor Green
+					Write-Log -LogLevel ACTION -Message "EDIT-TASK: Se cambió el tipo de respaldo de la tarea '$taskName' a '$newType'."
+                    # Actualizamos la variable en memoria para que el menu lo refleje si volvieramos a el
+                    $currentBackupType = $newType
+                } catch {
+                     Write-Error "Fallo al actualizar el archivo script: $generatedScriptPath"
+                     Write-Error $_.Exception.Message
+                }
+            } else {
+                Write-Warning "Operacion cancelada o tipo no valido seleccionado."
+            }
+        }
+        'D' { # --- ELIMINAR TAREA ---
+            Write-Warning "`n¡ADVERTENCIA DE ELIMINACION!"
+            Write-Host "Se eliminara la tarea de Windows '$taskName'."
+            if ($generatedScriptPath) {
+                 Write-Host "Tambien se eliminaran los archivos asociados en 'BackupScripts':"
+                 Write-Host " - $generatedScriptPath"
+                 $credPath = $generatedScriptPath -replace '\.ps1$', '.cred'
+                 if (Test-Path $credPath) { Write-Host " - $credPath (Archivo de credencial)" }
+            }
+            
+            $confirm = Read-Host "`nEscribe 'ELIMINAR' para confirmar"
+            if ($confirm -eq 'ELIMINAR') {
+                try {
+                    # 1. Eliminar del Programador de Tareas
+                    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+                    Write-Host "Tarea de Windows eliminada." -ForegroundColor Gray
+
+                    # 2. Eliminar archivos de script y credencial asociados
+                    if ($generatedScriptPath -and (Test-Path $generatedScriptPath)) {
+                        Remove-Item $generatedScriptPath -Force
+                        Write-Host "Script .ps1 eliminado." -ForegroundColor Gray
+                        
+                        $credPath = $generatedScriptPath -replace '\.ps1$', '.cred'
+                        if (Test-Path $credPath) {
+                            Remove-Item $credPath -Force
+                            Write-Host "Archivo .cred eliminado." -ForegroundColor Gray
+                        }
+                    }
+                    Write-Host "`n[EXITO] Tarea y archivos asociados eliminados correctamente." -ForegroundColor Green
+					Write-Log -LogLevel ACTION -Message "EDIT-TASK: Se eliminó completamente la tarea programada '$taskName' y sus archivos asociados."
+                } catch {
+                    Write-Error "Error durante la eliminacion: $($_.Exception.Message)"
+                }
+            } else {
+                Write-Host "Eliminacion cancelada." -ForegroundColor Yellow
+            }
+        }
+    }
+    Read-Host "`nPresiona Enter para continuar..."
+}
+
+# --- FUNCION 4: Administrar Respaldos (CORREGIDA) ---
 function Manage-ExistingBackups {
     param()
     
     Write-Host "`n[+] Administrar Respaldos Existentes" -ForegroundColor Cyan
     Write-Host "-------------------------------------------------------"
     
-    # --- 1. Seleccionar la carpeta de destino que contiene los respaldos ---
+    # --- 1. Seleccionar la carpeta de destino ---
     Write-Host "`n[+] Por favor, selecciona la CARPETA de Destino que contiene el manifiesto ('manifest.json')." -ForegroundColor Yellow
     $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de Destino de tus Respaldos"
     if ([string]::IsNullOrWhiteSpace($destinationPath)) {
@@ -646,15 +939,14 @@ function Manage-ExistingBackups {
         return
     }
     
+    # --- Variable para almacenar la credencial cargada en memoria ---
+    $loadedCredential = $null
+
+    # --- Carga inicial de la lista ---
     $allBackups = @($manifest.Backups | ForEach-Object {
-        # Agregamos propiedades (sin emitir aun)
         $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -Force
-        
-        $status = "Available"
-        if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
+        $status = "Available"; if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
         $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -Force
-        
-        # Emitimos el objeto UNA SOLA VEZ
         $_ 
     } | Sort-Object Timestamp -Descending)
 
@@ -666,123 +958,142 @@ function Manage-ExistingBackups {
         Write-Host "         Administrar Respaldos en: $destinationPath    " -ForegroundColor Cyan
         Write-Host "=======================================================" -ForegroundColor Cyan
         
+        # --- Indicador de estado de credencial ---
+        if ($null -ne $loadedCredential) {
+            Write-Host "`n[ESTADO] Credencial DPAPI cargada en memoria." -ForegroundColor Green
+        } else {
+            Write-Host "`n[ESTADO] Ninguna credencial cargada. Se solicitara contrasena si es necesario." -ForegroundColor Gray
+        }
+
         Write-Host "`nLista de respaldos registrados:" -ForegroundColor Yellow
-        
+        Write-Host ""
+
         for ($i = 0; $i -lt $allBackups.Count; $i++) {
             $backup = $allBackups[$i]
             $statusMarker = if ($backup.Selected) { "[X]" } else { "[ ]" }
             $statusColor = if ($backup.Status -eq "Available") { "Green" } else { "Red" }
             $encryptMarker = if ($backup.IsEncrypted) { "[CIFRADO]" } else { "[Simple]" }
-            
-            # Formateo seguro de fecha
-            $dateStr = "Fecha invalida"
-            try { $dateStr = ([datetime]$backup.Timestamp).ToString("yyyy-MM-dd HH:mm") } catch { $dateStr = $backup.Timestamp }
+            $dateStr = "Fecha invalida"; try { $dateStr = ([datetime]$backup.Timestamp).ToString("yyyy-MM-dd HH:mm") } catch { $dateStr = $backup.Timestamp }
 
-            Write-Host ("   [{0,2}] {1} {2} {3,-12} {4} -> {5}" -f 
-                ($i + 1),
-                $statusMarker,
-                $dateStr,
-                $backup.Type,
-                $encryptMarker,
-                $backup.File
-            ) -ForegroundColor $statusColor
+            Write-Host ("   [{0,2}] {1} {2} {3,-12} {4} -> {5}" -f ($i + 1), $statusMarker, $dateStr, $backup.Type, $encryptMarker, $backup.File) -ForegroundColor $statusColor
         }
         
         $selectedCount = @($allBackups | Where-Object { $_.Selected }).Count
-        if ($selectedCount -gt 0) {
-            Write-Host ""
-            Write-Host "   ($selectedCount elemento(s) seleccionado(s))" -ForegroundColor Cyan
-        }
+        if ($selectedCount -gt 0) { Write-Host "`n   ($selectedCount elemento(s) seleccionado(s))" -ForegroundColor Cyan }
         
         Write-Host "`n--- Acciones ---" -ForegroundColor Yellow
         Write-Host "   [Numero] Marcar/Desmarcar        [T] Seleccionar Todos"
         Write-Host "   [R] Restaurar seleccionados      [N] Desmarcar Todos"
         Write-Host "   [D] Eliminar seleccionados"
         Write-Host ""
+        Write-Host "   [C] Cargar Credencial (DPAPI) para restauracion automatica" -ForegroundColor Cyan
         Write-Host "   [P] Purgar Respaldos Antiguos (Politica de Retencion)" -ForegroundColor Magenta
         Write-Host ""
-        Write-Host "   [V] Volver al menu anterior" -ForegroundColor Red
+        Write-Host "   [V] Volver al menu anterior (Descarga la credencial de memoria)" -ForegroundColor Red
         Write-Host ""
         
         $choice = Read-Host "Selecciona una opcion"
         
         switch ($choice.ToUpper()) {
+            "C" { # --- OPCION DE CARGAR CREDENCIAL DPAPI ---
+                Write-Host "`n[+] Selecciona el archivo de credencial (.cred) que deseas cargar." -ForegroundColor Yellow
+                $defaultCredDir = Join-Path (Split-Path -Parent $PSScriptRoot) "BackupScripts"
+                if (-not (Test-Path $defaultCredDir)) { $defaultCredDir = $env:USERPROFILE }
+
+                $credPath = $null
+                try {
+                    Add-Type -AssemblyName System.Windows.Forms
+                    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+                    $dialog.Title = "Selecciona el archivo de credencial (.cred)"
+                    $dialog.InitialDirectory = $defaultCredDir
+                    $dialog.Filter = "Archivos de credencial (*.cred)|*.cred|Todos los archivos (*.*)|*.*"
+                    if ($dialog.ShowDialog() -eq 'OK') {
+                        $credPath = $dialog.FileName
+                    }
+                } catch {
+                     $credPath = Read-Host "Escribe la ruta completa al archivo .cred"
+                }
+
+                if ([string]::IsNullOrWhiteSpace($credPath) -or (-not (Test-Path $credPath))) {
+                    Write-Warning "No se selecciono un archivo valido. Operacion cancelada."
+                } else {
+                    Write-Host "Intentando descifrar '$credPath'..." -ForegroundColor Gray
+                    try {
+                        # --- EL CORAZON DE LA SEGURIDAD DPAPI (METODO BLINDADO V2) ---
+                        # 1. Leemos todo el texto usando .NET con codificación ASCII explícita.
+                        # 2. Usamos .Trim() para eliminar cualquier espacio en blanco o salto de línea al inicio/final.
+                        $encryptedContent = [System.IO.File]::ReadAllText($credPath, [System.Text.Encoding]::ASCII).Trim() # <--- CORREGIDO: Lectura robusta de texto + Trim
+                        
+                        # Usar DPAPI para descifrar
+                        $loadedCredential = $encryptedContent | ConvertTo-SecureString -ErrorAction Stop
+                        Write-Host "[EXITO] Credencial descifrada y cargada en memoria de forma segura." -ForegroundColor Green
+                        Write-Log -LogLevel ACTION -Message "MANAGE: Credencial DPAPI cargada desde '$credPath'."
+                    } catch {
+                        Write-Error "FALLO al descifrar la credencial."
+                        Write-Error "Asegurate de que eres el mismo usuario que creo el archivo .cred en esta maquina."
+                        Write-Error "Detalles: $($_.Exception.Message)"
+                        $loadedCredential = $null
+                    }
+                }
+                Read-Host "Presiona Enter para continuar..."
+            }
             "R" {
                 $selectedBackups = $allBackups | Where-Object { $_.Selected }
                 if ($selectedBackups.Count -eq 0) {
                     Write-Warning "No has seleccionado ningun respaldo para restaurar." ; Start-Sleep -Seconds 2; continue
                 }
-                # --- INICIA LOGICA DE RESTAURACION DE CADENA ---
-                Invoke-RestoreBackupChain -Manifest $manifest -DestinationPath $destinationPath -SelectedBackups $selectedBackups
+                # PASAMOS LA CREDENCIAL CARGADA A LA FUNCION DE RESTAURACION
+                Invoke-RestoreBackupChain -Manifest $manifest -DestinationPath $destinationPath -SelectedBackups $selectedBackups -MasterSecurePassword $loadedCredential
             }
             "D" {
                 $selectedBackups = $allBackups | Where-Object { $_.Selected }
-                if ($selectedBackups.Count -eq 0) {
-                    Write-Warning "No has seleccionado ningun respaldo para eliminar." ; Start-Sleep -Seconds 2; continue
-                }
-
+                if ($selectedBackups.Count -eq 0) { Write-Warning "No has seleccionado ningun respaldo para eliminar." ; Start-Sleep -Seconds 2; continue }
                 Write-Warning "¡ADVERTENCIA! Eliminar un respaldo COMPLETO o INCREMENTAL puede romper la cadena de restauracion."
                 $confirm = Read-Host "¿Estas seguro de eliminar los $($selectedBackups.Count) archivos Y sus entradas del manifiesto? (S/N)"
-                
                 if ($confirm.ToUpper() -eq 'S') {
                     try {
-                        # --- INICIO DE BLOQUE PROTEGIDO ---
                         foreach ($backup in $selectedBackups) {
                             $fullPath = Join-Path $destinationPath $backup.File
                             Write-Host "Eliminando $fullPath..." -ForegroundColor Gray
-                            
-                            # 1. Eliminar Archivo Físico
-                            if (Test-Path $fullPath) {
-                                Remove-Item $fullPath -Force -ErrorAction Stop
-                            } else {
-                                Write-Warning "   El archivo no existia en disco, eliminando solo del registro."
-                            }
-
-                            # 2. Eliminar del Manifiesto en Memoria
+							Write-Log -LogLevel ACTION -Message "MANAGE: Eliminando respaldo manual '$($backup.File)'."
+                            if (Test-Path $fullPath) { Remove-Item $fullPath -Force -ErrorAction Stop }
                             $manifest.Backups.Remove($backup) | Out-Null
                         }
-                        
-                        # 3. Guardar Manifiesto
                         Update-BackupManifest -DestinationPath $destinationPath -Manifest $manifest
                         Write-Host "[OK] Respaldos eliminados correctamente." -ForegroundColor Green
-                        
-                        # 4. Recargar la lista (CORREGIDO: Sin duplicar objetos)
-                        $allBackups = $manifest.Backups | ForEach-Object {
+                        $allBackups = @($manifest.Backups | ForEach-Object {
                             $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -Force
                             $status = "Available"; if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
                             $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -Force
-                            $_ # Emitir objeto una sola vez
-                        } | Sort-Object Timestamp -Descending
-                        
-                        # Pausa para ver el resultado verde
+                            $_ 
+                        } | Sort-Object Timestamp -Descending)
                         Read-Host "Presiona Enter para continuar..."
-
                     } catch {
-                        # --- CAPTURA DE ERRORES ---
-                        Write-Error "Ocurrio un error durante la eliminacion:"
-                        Write-Error $_.Exception.Message
-                        Write-Warning "Es posible que algunos archivos no se hayan borrado."
-                        Read-Host "Presiona Enter para confirmar el error y continuar..." # <--- AQUI PODRAS LEER EL ERROR
+                        Write-Error "Ocurrio un error durante la eliminacion: $($_.Exception.Message)"
+                        Read-Host "Presiona Enter para continuar..."
                     }
                 }
             }
-			"P" {
+            "P" {
                 Write-Log -LogLevel INFO -Message "BACKUP/Manage: Usuario selecciono Purgar Respaldos."
-                # Llamamos a la nueva funcion de logica de purga
                 Invoke-PruneBackups -Manifest $manifest -DestinationPath $destinationPath
-                
-                # Recargamos el manifiesto y la lista por si se borraron archivos
                 $manifest = Get-BackupManifest -DestinationPath $destinationPath
-                $allBackups = $manifest.Backups | ForEach-Object {
-                    $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -PassThru
+                $allBackups = @($manifest.Backups | ForEach-Object {
+                    $_ | Add-Member -MemberType NoteProperty -Name 'Selected' -Value $false -Force
                     $status = "Available"; if (-not (Test-Path (Join-Path $destinationPath $_.File))) { $status = "Missing" }
-                    $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -PassThru
-                } | Sort-Object Timestamp -Descending
+                    $_ | Add-Member -MemberType NoteProperty -Name 'Status' -Value $status -Force
+                    $_
+                } | Sort-Object Timestamp -Descending)
                 Read-Host "`nPurga finalizada. Presiona Enter para refrescar..."
             }
             "T" { $allBackups.ForEach({$_.Selected = $true}) }
             "N" { $allBackups.ForEach({$_.Selected = $false}) }
-            "V" { continue }
+            "V" { 
+                # Limpieza de seguridad al salir del menú
+                $loadedCredential = $null
+                [GC]::Collect()
+                continue 
+            }
             default {
                 if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $allBackups.Count) {
                     $index = [int]$choice - 1
@@ -793,7 +1104,7 @@ function Manage-ExistingBackups {
     }
 }
 
-# --- FUNCION: Logica de Purga de Respaldos ---
+# --- FUNCION: Logica de Purga de Respaldos (CORREGIDA) ---
 function Invoke-PruneBackups {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
@@ -812,10 +1123,15 @@ function Invoke-PruneBackups {
     $keepCount = [int]$keepCountInput
 
     # --- 1. Identificar todas las cadenas de respaldo (por Origen) ---
+    # Verificamos que existan respaldos antes de agrupar
+    if ($null -eq $Manifest.Backups -or $Manifest.Backups.Count -eq 0) {
+        Write-Warning "No hay respaldos para purgar."
+        return
+    }
     $chains = $Manifest.Backups | Group-Object Source
 
-    $filesToDelete = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $filesToKeep = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $filesToDelete = @()
+    $filesToKeep = @()
 
     foreach ($chain in $chains) {
         $source = $chain.Name
@@ -826,26 +1142,30 @@ function Invoke-PruneBackups {
         
         if ($fullBackups.Count -le $keepCount) {
             Write-Host "   - Se encontraron $($fullBackups.Count) cadenas. Politica de retencion ($keepCount) no alcanzada. No se purgara nada." -ForegroundColor Green
-            $filesToKeep.AddRange($backupsInChain)
+            $filesToKeep += $backupsInChain 
             continue
         }
 
         # --- 2. Identificar cadenas a MANTENER ---
         $fullBackupsToKeep = $fullBackups | Select-Object -First $keepCount
-        $filesToKeep.AddRange($fullBackupsToKeep)
+        $filesToKeep += $fullBackupsToKeep
 
         foreach ($full in $fullBackupsToKeep) {
             $children = Get-BackupChildren -Manifest $Manifest -Parent $full
-            $filesToKeep.AddRange($children)
+            if ($children) {
+                 $filesToKeep += $children
+            }
         }
         
         # --- 3. Identificar cadenas a ELIMINAR ---
         $fullBackupsToDelete = $fullBackups | Select-Object -Skip $keepCount
-        $filesToDelete.AddRange($fullBackupsToDelete)
+        $filesToDelete += $fullBackupsToDelete
         
         foreach ($full in $fullBackupsToDelete) {
             $children = Get-BackupChildren -Manifest $Manifest -Parent $full
-            $filesToDelete.AddRange($children)
+            if ($children) {
+                 $filesToDelete += $children
+            }
         }
         
         Write-Host "   - Se conservaran $($fullBackupsToKeep.Count) cadenas." -ForegroundColor Gray
@@ -873,7 +1193,11 @@ function Invoke-PruneBackups {
     foreach ($file in $filesToDelete) {
         if ($PSCmdlet.ShouldProcess($file.File, "Eliminar archivo obsoleto")) {
             Write-Host "Eliminando $($file.File)..." -ForegroundColor Gray
-            Remove-Item (Join-Path $DestinationPath $file.File) -ErrorAction SilentlyContinue
+            $fullPath = Join-Path $DestinationPath $file.File
+            if (Test-Path $fullPath) {
+                Remove-Item $fullPath -ErrorAction SilentlyContinue
+            }
+            # Eliminamos del manifiesto en memoria
             $Manifest.Backups.Remove($file) | Out-Null
         }
     }
@@ -932,44 +1256,39 @@ function Verify-BackupIntegrity {
 
     Write-Host "`n[+] Verificando la integridad de $($manifest.Backups.Count) archivos de respaldo..." -ForegroundColor Yellow
     $issuesFound = 0
-    $verificationResults = @()
-
-    foreach ($backup in $manifest.Backups) {
+    # Asignamos el resultado del foreach directamente al array
+    $verificationResults = foreach ($backup in $manifest.Backups) {
         $archivePath = Join-Path $destinationPath $backup.File
         $result = [PSCustomObject]@{ Check = $backup.File; Status = "ERROR"; Details = "Archivo no encontrado" }
 
         if (Test-Path $archivePath) {
             Write-Host "   - Probando $($backup.File)..." -ForegroundColor Gray
-            $7zArgs = @("t", "`"$archivePath`"") # "t" es el comando Test
-            if ($backup.IsEncrypted) {
-                # 7z t no puede probar un archivo cifrado sin la contraseña.
-                # Solo podemos verificar que el encabezado no este corrupto.
-                $7zArgs += "-p_DUMMY_PASSWORD_" # Usamos una contraseña incorrecta a proposito
-            }
-            
-            # Ocultamos la salida de 7z
-            $output = & "7z.exe" $7zArgs 2>&1
-            $exitCode = $LASTEXITCODE
-
+            # ... (el resto del código dentro del if/else sigue igual) ...
             if ($exitCode -eq 0) {
                 # Exito
                 $result.Status = "OK"
                 $result.Details = "Archivo integro."
             } elseif ($backup.IsEncrypted -and ($output -match "Wrong password" -or $exitCode -eq 2)) {
-                # Esto es un "exito" para un archivo cifrado, significa que 7z pudo leerlo
+                # Esto es un "exito" para un archivo cifrado
                 $result.Status = "OK (Cifrado)"
                 $result.Details = "El archivo esta cifrado y parece ser valido."
             } else {
                 # Error real
                 $result.Status = "Error"
                 $result.Details = "¡Archivo corrupto! (Codigo: $exitCode)"
-                $issuesFound++
+                # IMPORTANTE: No podemos incrementar $issuesFound aquí dentro porque
+                # estamos en un pipeline que retorna objetos. Lo haremos después.
             }
         } else {
-            $issuesFound++
+            # Archivo no encontrado
         }
-        $verificationResults += $result
+
+        # Emitimos el objeto $result al final de cada iteración
+        $result
     }
+
+    # Ahora, contamos los errores basándonos en los resultados finales
+    $issuesFound = ($verificationResults | Where-Object { $_.Status -eq "Error" -or $_.Status -eq "ERROR" }).Count
 
     # --- 4. Mostrar Resultados ---
     Write-Host "`nResultados de la verificacion:" -ForegroundColor Cyan
@@ -985,21 +1304,24 @@ function Verify-BackupIntegrity {
     
     if ($issuesFound -eq 0) {
         Write-Host "`n[OK] Todos los respaldos en el manifiesto estan integros y disponibles." -ForegroundColor Green
+		Write-Log -LogLevel INFO -Message "VERIFY: Verificación de integridad completada con ÉXITO para $($manifest.Backups.Count) archivos."
     } else {
         Write-Host "`n[ERROR CRITICO] Se encontraron $issuesFound problemas (archivos corruptos o faltantes)." -ForegroundColor Red
         Write-Host "Revisa los detalles. Es posible que la cadena de respaldo este rota." -ForegroundColor Red
+		Write-Log -LogLevel ERROR -Message "VERIFY: Verificación de integridad finalizó con $issuesFound ERRORES."
     }
     
     Read-Host "`nPresiona Enter para continuar..."
 }
 
-# --- FUNCION 6: Logica de Restauracion de Cadena (NUEVA) ---
-# Esta funcion contiene la logica para restaurar una cadena incremental
+# --- FUNCION 6: Logica de Restauracion de Cadena (CORREGIDA) ---
 function Invoke-RestoreBackupChain {
     param(
         [PSCustomObject]$Manifest,
         [string]$DestinationPath,
-        [PSCustomObject[]]$SelectedBackups
+        [PSCustomObject[]]$SelectedBackups,
+        # Nuevo parametro opcional para pasar una contraseña ya descifrada
+        [System.Security.SecureString]$MasterSecurePassword = $null
     )
     
     if (-not (Ensure-7ZipIsInstalled)) { return }
@@ -1010,71 +1332,109 @@ function Invoke-RestoreBackupChain {
         Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
 
+    # Diccionario para guardar contraseñas ingresadas manualmente durante esta sesion
+    $sessionPasswords = @{}
+
     foreach ($selectedBackup in $SelectedBackups) {
         Write-Host "`n--- Iniciando Restauracion de: $($selectedBackup.File) ---" -ForegroundColor Cyan
+        Write-Log -LogLevel INFO -Message "RESTORE: Iniciando calculo de cadena para '$($selectedBackup.File)'."
         
         # --- 1. Construir la cadena de restauracion ---
         $restoreChain = [System.Collections.Generic.List[PSCustomObject]]::new()
         $current = $selectedBackup
+        $brokenChain = $false
         while ($current -ne $null) {
-            $restoreChain.Insert(0, $current) # Insertar al principio para revertir el orden
+            $restoreChain.Insert(0, $current)
             if ($current.Parent -eq $null) {
                 $current = $null # Llego al Full
             } else {
-                $current = $Manifest.Backups | Where-Object { $_.File -eq $current.Parent } | Select-Object -First 1
+                $parentFound = $Manifest.Backups | Where-Object { $_.File -eq $current.Parent } | Select-Object -First 1
+                if ($null -eq $parentFound) {
+                    $msg = "CRITICO: Cadena rota. Falta el archivo padre en el registro: '$($current.Parent)'"
+                    Write-Host $msg -ForegroundColor Red
+                    Write-Log -LogLevel ERROR -Message "RESTORE: $msg"
+                     $brokenChain = $true
+                     break
+                }
+                $current = $parentFound
             }
         }
         
+        if ($brokenChain) { continue }
+
         Write-Host "[INFO] Este respaldo depende de $($restoreChain.Count) archivo(s):" -ForegroundColor Gray
         $restoreChain | ForEach-Object { Write-Host "   - $($_.File)" }
 
         # --- 2. Ejecutar la cadena ---
-        $passwords = @{} # Almacen de contraseñas para no preguntar dos veces
         $globalSuccess = $true
 
         foreach ($backupFile in $restoreChain) {
             $archivePath = Join-Path $DestinationPath $backupFile.File
             if (-not (Test-Path $archivePath)) {
-                Write-Error "¡FALTANTE! No se puede encontrar el archivo '$($backupFile.File)'. La cadena de restauracion esta ROTA."
+                $msg = "¡FALTANTE! No se puede encontrar el archivo fisico '$($backupFile.File)'. La cadena de restauracion esta ROTA."
+                Write-Error $msg
+                Write-Log -LogLevel ERROR -Message $msg
                 $globalSuccess = $false
                 break
             }
             
             Write-Host "`n[+] Aplicando: $($backupFile.File)..." -ForegroundColor Yellow
+            Write-Log -LogLevel ACTION -Message "RESTORE: Extrayendo '$($backupFile.File)' hacia '$restorePath'."
+
             $7zArgs = @("x", "`"$archivePath`"", "-o`"$restorePath`"", "-y")
             
             if ($backupFile.IsEncrypted) {
-                $password = $null
-                if ($passwords.ContainsKey($backupFile.File)) {
-                    $password = $passwords[$backupFile.File]
-                } else {
-                    $password = Read-Host "Introduce la contrasena para '$($backupFile.File)'" -AsSecureString
-                    $passwords[$backupFile.File] = $password
+                $passwordToUse = $null
+
+                # PRIORIDAD 1: Usar Credencial Maestra cargada (DPAPI)
+                if ($null -ne $MasterSecurePassword) {
+                    $passwordToUse = $MasterSecurePassword
+                # PRIORIDAD 2: Usar contraseña ya ingresada manualmente en esta sesión
+                } elseif ($sessionPasswords.ContainsKey($backupFile.File)) {
+                    $passwordToUse = $sessionPasswords[$backupFile.File]
+                } 
+                # PRIORIDAD 3: Preguntar al usuario
+                else {
+                    Write-Host "Este archivo esta cifrado." -ForegroundColor Cyan
+                    if ($null -eq $MasterSecurePassword) { Write-Host "(Consejo: Puedes usar la opcion 'C' en el menu anterior para cargar un archivo .cred)" -ForegroundColor Gray }
+                    $passwordToUse = Read-Host "Introduce la contrasena para '$($backupFile.File)'" -AsSecureString
+                    # Guardamos la contraseña manual por si se necesita para otro archivo de la misma cadena
+                    $sessionPasswords[$backupFile.File] = $passwordToUse
                 }
-                $7zArgs += "-p$($password | ConvertFrom-SecureString)"
+                
+                # Convertir SecureString a BSTR para 7-Zip de forma segura
+                $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordToUse)
+                $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($ptr)
+                $7zArgs += "-p$plainPass"
+                # Limpieza inmediata del texto plano en memoria no gestionada
+                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
             }
             
+            # Ejecutar 7-Zip visible
             $process = Start-Process "7z.exe" -ArgumentList $7zArgs -Wait -NoNewWindow -PassThru
             
             if ($process.ExitCode -ne 0) {
-                Write-Error "¡FALLO! 7-Zip fallo al extraer '$($backupFile.File)' (Codigo: $($process.ExitCode))."
-                Write-Error "La contrasena puede ser incorrecta o el archivo esta corruto."
+                $msg = "¡FALLO! 7-Zip fallo al extraer '$($backupFile.File)' (Codigo: $($process.ExitCode)). Contrasena incorrecta o archivo corrupto."
+                Write-Error $msg
+                Write-Log -LogLevel ERROR -Message $msg
                 $globalSuccess = $false
                 break
             }
         }
 
         if ($globalSuccess) {
-            Write-Host "`n[EXITO] Restauracion de '$($selectedBackup.File)' completada en '$restorePath'." -ForegroundColor Green
+            $msg = "Restauracion de '$($selectedBackup.File)' completada exitosamente en '$restorePath'."
+            Write-Host "`n[EXITO] $msg" -ForegroundColor Green
+            Write-Log -LogLevel ACTION -Message $msg
         } else {
-            Write-Error "`n[FALLO] La restauracion de '$($selectedBackup.File)' ha fallado." -ForegroundColor Red
+            Write-Host "`n[FALLO] La restauracion de '$($selectedBackup.File)' ha fallado." -ForegroundColor Red
         }
     }
     
-    $passwords = $null; [GC]::Collect() # Limpiar contraseñas de memoria
+    # Limpieza de memoria
+    $sessionPasswords = $null; [GC]::Collect()
     Read-Host "`nPresiona Enter para continuar..."
 }
-
 
 # ===================================================================
 # --- FUNCIONES AUXILIARES DE RESPALDO (NUEVAS Y MODIFICADAS) ---
@@ -1090,61 +1450,54 @@ function Get-BackupManifest {
     
     $manifestPath = Join-Path $DestinationPath "manifest.json"
     
+    # CASO 1: El archivo existe (Lectura normal)
     if (Test-Path $manifestPath) {
         try {
             Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Leyendo manifiesto existente en '$manifestPath'."
             
-            # 1. Leer el contenido de texto plano
             $jsonContent = Get-Content $manifestPath -Raw
-            
-            # 2. Convertir desde JSON
             $manifest = $jsonContent | ConvertFrom-Json
             
-            # 3. Asegurarse de que 'Backups' sea una Lista y ELIMINAR DUPLICADOS (Metodo Manual)
+            # Asegurarse de que 'Backups' sea una Lista y eliminar duplicados
             $cleanList = New-Object System.Collections.Generic.List[PSCustomObject]
-            $seenFiles = @{} # Diccionario para recordar nombres vistos
+            $seenFiles = @{} 
 
             if ($null -ne $manifest.Backups) {
-                # Forzamos a que sea un array para poder recorrerlo
                 $rawBackups = [PSCustomObject[]]@($manifest.Backups)
-                
                 foreach ($backup in $rawBackups) {
-                    # Usamos el nombre del archivo como clave unica
                     $fileName = $backup.File
-                    
-                    # Si NO hemos visto este archivo antes, lo agregamos
                     if (-not $seenFiles.ContainsKey($fileName)) {
                         $seenFiles[$fileName] = $true
                         $cleanList.Add($backup)
                     }
                 }
             }
-            # Ahora $cleanList tiene solo una copia de cada archivo
             $manifest.Backups = $cleanList
             return $manifest
+
         } catch {
-            # --- MEJORA DE SEGURIDAD (Punto 3) ---
+            # Manejo de archivo corrupto
             $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
             $corruptFile = Join-Path $DestinationPath "manifest_corrupt_$timestamp.json"
             
-            Write-Warning "¡ALERTA CRITICA! El archivo 'manifest.json' está corrupto."
-            Write-Warning "Error detectado: $($_.Exception.Message)"
-            
-            # Intentamos salvar el archivo corrupto para análisis manual
-            try {
-                Copy-Item -Path $manifestPath -Destination $corruptFile -Force
-                Write-Warning "Se ha guardado una copia del archivo dañado en: $corruptFile"
-            } catch {
-                Write-Error "No se pudo hacer copia de seguridad del manifiesto dañado."
-            }
+            Write-Warning "¡ALERTA CRITICA! El archivo 'manifest.json' esta corrupto."
+            try { Copy-Item -Path $manifestPath -Destination $corruptFile -Force } catch {}
 
-            Write-Log -LogLevel ERROR -Message "BACKUP/7-Zip: Manifiesto corrupto. Copia guardada en '$corruptFile'. Se inicia nueva cadena."
+            Write-Log -LogLevel ERROR -Message "BACKUP/7-Zip: Manifiesto corrupto. Se inicia nueva cadena."
             
-            # Retornamos estructura vacía para no romper el script
+            # Retornamos estructura vacia
             return [PSCustomObject]@{ 
                 ManifestVersion = "1.0-Recovered"
-                Backups = [System.Collections.Generic.List[PSCustomObject]]::new()
+                Backups = [System.Collections.Generic.List[PSCustomObject]]::new() 
             }
+        }
+    } 
+    # CASO 2: El archivo NO existe (Primer respaldo)
+    else {
+        Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: No se encontro manifiesto. Creando uno nuevo."
+        return [PSCustomObject]@{ 
+            ManifestVersion = "1.0"
+            Backups = [System.Collections.Generic.List[PSCustomObject]]::new() 
         }
     }
 }
@@ -1971,7 +2324,7 @@ function Start-ProfileGuardMenu {
         Write-Host "--- Estado de Respaldo Automatico ---" -ForegroundColor Yellow
         
         if ($nextTaskName) {
-             Write-Host "   Proximo respaldo: $nextScheduledRun $nextTaskName"
+             Write-Host "   Proximo respaldo: $nextScheduledRun $nextTaskName" -ForegroundColor White
         } else {
              Write-Host "   Proximo respaldo: $nextScheduledRun"
         }
@@ -1979,29 +2332,26 @@ function Start-ProfileGuardMenu {
         Write-Host "   Respaldos automaticos activos: $([int]$activeScheduled.Count)"
         Write-Host ""
         Write-Host "--- Acciones de Respaldo ---" -ForegroundColor Yellow
-        Write-Host "   [1] Respaldo Manual Inmediato (Cifrado o Simple)"
+        Write-Host "   [1] Respaldo Manual Inmediato (Cifrado o Simple)" -ForegroundColor White
         Write-Host "       (Crea un respaldo Completo, Incremental o Diferencial ahora)" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "   [2] Configurar Respaldo Automatico Programado"
+        Write-Host "   [2] Configurar Respaldo Automatico Programado" -ForegroundColor White
         Write-Host "       (Establece horarios para respaldos sin intervencion)" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "   [3] Administrar Respaldos Existentes"
+		Write-Host "   [2a] Editar/Eliminar Tarea Programada" -ForegroundColor Yellow
+        Write-Host "        (Modificar horario, tipo o borrar tareas existentes)" -ForegroundColor Gray
+        Write-Host "   [3] Administrar Respaldos Existentes" -ForegroundColor White
         Write-Host "       (Ver, restaurar o eliminar respaldos anteriores)" -ForegroundColor Gray
-        Write-Host ""
-        Write-Host "   [4] Verificar Integridad de Respaldos"
+        Write-Host "   [4] Verificar Integridad de Respaldos" -ForegroundColor White
         Write-Host "       (Comprueba que tus respaldos esten completos y sin corrupcion)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "--- Herramientas ---" -ForegroundColor Yellow
         Write-Host "   [5] Respaldo Simple (Sincronizacion Robocopy)" -ForegroundColor Green
         Write-Host "       (Copia rapida y sin cifrar. Ideal para copias locales/NAS)" -ForegroundColor Gray
-        Write-Host ""
         Write-Host "   [6] Reubicar Carpetas de Usuario (Escritorio, Documentos, etc.)" -ForegroundColor Yellow
         Write-Host "       (Mueve tus carpetas personales a otra unidad o ubicacion)" -ForegroundColor Gray
         Write-Host ""
         Write-Host "-------------------------------------------------------"
         Write-Host ""
-        Write-Host "   [L] Ver Registro de Actividad (Log)" -ForegroundColor Gray
-        Write-Host ""
+        Write-Host "   [L] VISOR DE REGISTROS (LOGS)" -ForegroundColor Gray
         Write-Host "   [S] Salir del script" -ForegroundColor Red
         Write-Host ""
         
@@ -2013,19 +2363,60 @@ function Start-ProfileGuardMenu {
         switch ($mainChoice.ToUpper()) {
             '1' { Invoke-BackupCreation }
             '2' { Configure-AutoBackupSchedule }
+			'2A' { Edit-ScheduledTask }
             '3' { Manage-ExistingBackups }
             '4' { Verify-BackupIntegrity }
             '5' { Invoke-SimpleRobocopyBackupMenu }
             '6' { Move-UserProfileFolders }
             'L' {
+                # --- Definir las rutas de los logs ---
                 $parentDir = Split-Path -Parent $PSScriptRoot
-                $logFile = Join-Path -Path $parentDir -ChildPath "Logs\Registro.log"
-                if (Test-Path $logFile) {
-                    Write-Host "`n[+] Abriendo archivo de registro..." -ForegroundColor Green
-                    Start-Process notepad.exe -ArgumentList $logFile
-                } else {
-                    Write-Warning "El archivo de registro aun no ha sido creado. Realiza alguna accion primero."
-                    Read-Host "`nPresiona Enter para continuar..."
+                $generalLogFile = Join-Path -Path $parentDir -ChildPath "Logs\Registro.log"
+
+                $scheduledLogFile = Join-Path -Path $env:ProgramData -ChildPath "ProfileGuard_Logs\Backup_Log.txt"
+
+                # --- Sub-menú de selección ---
+                Clear-Host
+                Write-Host "`n========================================" -ForegroundColor Cyan
+                Write-Host "    VISOR DE REGISTROS (LOGS)    " -ForegroundColor White
+                Write-Host "========================================" -ForegroundColor Cyan
+                Write-Host "`nSelecciona el archivo de registro que deseas abrir:" -ForegroundColor Yellow
+                Write-Host "`n   [1] Registro General de Actividad" -ForegroundColor White
+                Write-Host "       (Acciones realizadas en ProfileGuard)" -ForegroundColor Gray
+                Write-Host "`n   [2] Registro de Tareas Programadas" -ForegroundColor White
+                Write-Host "       (Ejecuciones automaticas y sus resultados, por el Respaldo Automatico)" -ForegroundColor Gray
+                Write-Host "`n   [V] Volver al menu principal" -ForegroundColor Green
+                Write-Host "========================================" -ForegroundColor Cyan
+
+                $logChoice = Read-Host "`nElige una opcion (1-2, V)"
+
+                switch ($logChoice.ToUpper()) {
+                    '1' {
+                        if (Test-Path $generalLogFile) {
+                            Write-Host "`n[+] Abriendo registro general..." -ForegroundColor Green
+                            Start-Process notepad.exe -ArgumentList $generalLogFile
+                        } else {
+                            Write-Warning "`nEl archivo de registro general ('$generalLogFile') aun no existe."
+                            Read-Host "Presiona Enter para continuar..."
+                        }
+                    }
+                    '2' {
+                        if (Test-Path $scheduledLogFile) {
+                            Write-Host "`n[+] Abriendo registro de tareas programadas..." -ForegroundColor Green
+                            Start-Process notepad.exe -ArgumentList $scheduledLogFile
+                        } else {
+                            Write-Warning "`nEl registro de tareas programadas ('$scheduledLogFile') no se encuentra."
+                            Write-Host "Posiblemente aun no se ha ejecutado ninguna tarea automatica." -ForegroundColor Gray
+                            Read-Host "Presiona Enter para continuar..."
+                        }
+                    }
+                    'V' {
+                        # No hace nada, vuelve al menu principal
+                    }
+                    default {
+                        Write-Warning "Opcion no valida."
+                        Start-Sleep -Seconds 1
+                    }
                 }
             }
             'S' { Write-Host "`nGracias por usar ProfileGuard by SOFTMAXTER!" }
@@ -2043,7 +2434,6 @@ function Start-ProfileGuardMenu {
     Write-Log -LogLevel INFO -Message "================================================="
 }
 
-# Solo iniciamos el menu si el script NO esta siendo importado (dot-sourced) por otro script
 if ($MyInvocation.InvocationName -ne '.') {
     Start-ProfileGuardMenu
 }
