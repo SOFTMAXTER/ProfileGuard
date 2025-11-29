@@ -1,4 +1,4 @@
-# ProfileGuard v1.1 by SOFTMAXTER
+# ProfileGuard v1.1.5 by SOFTMAXTER
 <p align="center">
   <img width="300" height="300" alt="ProfileGuard" src="https://github.com/user-attachments/assets/caa05243-4b2f-4974-a6de-970a2269ad5e" />
 </p>
@@ -19,6 +19,7 @@ ProfileGuard cierra la brecha entre las utilidades de copia simples y las soluci
 * **Motor de Respaldo Avanzado (7-Zip):**
     * Soporte nativo para esquemas de respaldo **Completo (Full)**, **Incremental** y **Diferencial**.
     * **Cifrado AES-256** opcional con generación automática de contraseñas de alta entropía.
+    * **Niveles de Compresión Flexibles:** Permite elegir entre compresión **Rápida (Nivel 5)** para un buen equilibrio entre velocidad y tamaño, o **Máxima (Nivel 9)** para lograr el archivo más pequeño posible, ideal para tareas nocturnas.
     * Sistema de seguimiento basado en `manifest.json` portable, permitiendo la restauración de cadenas complejas sin dependencias externas y la reconstrucción automática de rutas de restauración.
 * **Sincronización de Alto Rendimiento (Robocopy):**
     * Modos de operación **Copy** (Actualización) y **Mirror** (Espejo/Sincronización exacta).
@@ -61,18 +62,20 @@ El script presenta una interfaz interactiva basada en consola con las siguientes
 Inicia el motor de archivado 7-Zip para realizar un respaldo al momento.
 * Solicita las rutas de origen y destino mediante diálogos gráficos.
 * Permite elegir entre los esquemas de respaldo **Completo**, **Incremental** o **Diferencial**.
+* **Nivel de Compresión:** Permite seleccionar entre nivel Rápido o Máximo.
 * Opción de cifrado: Si se activa, permite introducir una contraseña manual o genera automáticamente una contraseña segura, cifrando tanto el contenido como los encabezados de archivo (`-mhe=on`).
 
 #### `[2] Configurar Respaldo Automático Programado`
 Crea una tarea persistente en el Programador de Tareas de Windows.
-* Guía al usuario a través de la selección de origen, destino, frecuencia (Diaria/Semanal), hora y tipo de respaldo.
+* Guía al usuario a través de la selección de origen, destino, frecuencia (Diaria/Semanal) y hora.
+* Permite definir el tipo de respaldo y el nivel de compresión para la tarea automática.
 * Genera un script `.ps1` dedicado para la tarea y un archivo de credencial `.cred` cifrado vía DPAPI para el manejo seguro de contraseñas.
 * La tarea se registra para ejecutarse con los **privilegios más altos** (`-RunLevel Highest`) y solo cuando el usuario haya iniciado sesión, permitiendo respaldos desatendidos seguros.
 
 #### `[2a] Editar/Eliminar Tarea Programada`
 Proporciona una interfaz para gestionar las tareas de respaldo creadas por ProfileGuard.
 * Lista las tareas existentes con información sobre su estado, próxima ejecución, tipo de respaldo y horario.
-* Permite **editar** el horario, la frecuencia y el tipo de respaldo de una tarea existente.
+* Permite **editar** el horario, la frecuencia, el tipo de respaldo y el **nivel de compresión** de una tarea existente.
 * Permite **eliminar** completamente una tarea, incluyendo el script `.ps1` y el archivo `.cred` asociados.
 
 #### `[3] Administrar Respaldos Existentes`
