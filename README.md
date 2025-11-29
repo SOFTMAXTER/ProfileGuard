@@ -48,7 +48,6 @@ ProfileGuard cierra la brecha entre las utilidades de copia simples y las soluci
 * **Permisos:** Se requieren privilegios de **Administrador Local** para la ejecución. El script solicitará elevación automática mediante UAC si no se ejecuta con privilegios suficientes.
 * **Dependencias:**
     * **7-Zip:** El script detectará su ausencia e intentará instalarlo automáticamente vía **Winget** si se requieren funciones de archivado. Es esencial para el motor de respaldo avanzado.
-* **Configuración Adicional:** Para las notificaciones por correo electrónico, se requiere un servidor SMTP y una cuenta válida, configurables en el script.
 
 ## 🛠️ Modo de Uso
 
