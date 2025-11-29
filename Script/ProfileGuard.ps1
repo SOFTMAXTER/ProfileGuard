@@ -16,7 +16,7 @@
     SOFTMAXTER
 
 .VERSION
-    1.1.0
+    1.1.5
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
     [string]$LogContext
 )
 
-$script:Version = "1.1.0"
+$script:Version = "1.1.5"
 
 function Write-Log {
     [CmdletBinding()]
@@ -197,8 +197,6 @@ catch {
     }
 }
 
-# Ejecutar el actualizador DESPUES de definir la version
-Invoke-FullRepoUpdater
 
 # --- Verificacion de Privilegios de Administrador ---
 if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -244,7 +242,7 @@ function Invoke-ExplorerRestart {
     }
 }
 
-# --- FUNCION 2: El NUEVO Motor de Creacion de Respaldos (Basado en mi logica) ---
+# --- FUNCION 2: El NUEVO Motor de Creacion de Respaldos (Manual) ---
 function Invoke-BackupCreation {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param()
@@ -281,6 +279,19 @@ function Invoke-BackupCreation {
         $backupType = Read-Host "Elige una opcion (1-3)"
     }
     $Type = switch($backupType) { '1' { 'Full' } '2' { 'Incremental' } '3' { 'Differential' } }
+
+	Write-Host "`n[3.5/5] Selecciona el nivel de compresion:" -ForegroundColor Yellow
+    Write-Host "   [1] Rapido (Nivel 5) - Buen equilibrio entre velocidad y tamaño."
+    Write-Host "   [2] Maximo (Nivel 9) - Archivo mas pequeño, pero mucho mas lento."
+    $compChoice = Read-Host "Elige una opcion (1-2) [Por defecto: 1]"
+    
+    # Si el usuario da Enter sin elegir, se usa '1' (Rápido) por defecto
+    if ([string]::IsNullOrWhiteSpace($compChoice) -or $compChoice -notin @('1', '2')) {
+        $compChoice = '1'
+        Write-Host "   -> Usando nivel Rápido por defecto." -ForegroundColor Gray
+    }
+    # Mapeamos la elección al parámetro que espera el motor
+    $compressionLevel = if ($compChoice -eq '2') { 'Max' } else { 'Fast' }
     
     # --- 4. Opcion de Cifrado ---
     Write-Host "`n[4/5] ¿Deseas cifrar este respaldo con AES-256?" -ForegroundColor Yellow
@@ -289,7 +300,10 @@ function Invoke-BackupCreation {
     
     $securePassword = $null
     $isEncrypted = $false
-    $passwordTextForFile = $null # Solo para guardar la contraseña generada en .txt
+    $passwordTextForFile = $null 
+    $passMethod = ''
+    # Nueva variable para guardar la decisión del usuario
+    $savePasswordToFileChoice = 'N' # <--- CAMBIO AQUÍ: Inicializamos la variable
 
     if ($encryptChoice.ToUpper() -eq 'S') {
         $isEncrypted = $true
@@ -300,44 +314,73 @@ function Invoke-BackupCreation {
         if ($passMethod -eq '1') {
             $securePassword = Read-Host "Introduce una contrasena segura" -AsSecureString
         } else {
+            # Generación aleatoria
             $passwordTextForFile = Generate-SecurePassword
             $securePassword = ConvertTo-SecureString $passwordTextForFile -AsPlainText -Force
             Write-Host "`n[+] Se ha generado una contrasena segura aleatoria." -ForegroundColor Green
-            Write-Warning "IMPORTANTE: Se guardara en un archivo .txt. Guardala en un lugar seguro."
+            
+            # --- SECCIÓN MODIFICADA: PREGUNTAR AL USUARIO ---
             Write-Host "`nCONTRASENA GENERADA: $passwordTextForFile" -ForegroundColor Magenta
-            Read-Host "Presiona Enter para confirmar que has visto la contrasena..."
+            Write-Warning "¡Cópiala ahora! No la pierdas."
+            
+            # Preguntamos si quiere guardarla en archivo
+            $savePasswordToFileChoice = Read-Host "`n¿Deseas que el script guarde esta contraseña en un archivo .txt en el destino? (S/N)" # <--- CAMBIO AQUÍ: La pregunta
+            
+            if ($savePasswordToFileChoice.ToUpper() -eq 'S') {
+                 Write-Host "[INFO] Se intentará guardar la contraseña en un archivo al finalizar con éxito." -ForegroundColor Gray
+            } else {
+                 Write-Warning "Has elegido NO guardar la contraseña en un archivo. Asegúrate de tenerla a buen recaudo."
+            }
+            # --- FIN SECCIÓN MODIFICADA ---
+            
+            Read-Host "`nPresiona Enter para continuar..."
         }
     }
     
     # --- 5. LLAMAR AL MOTOR CENTRALIZADO ---
     Write-Host "`n[5/5] Ejecutando motor de respaldo... Esto puede tardar." -ForegroundColor Yellow
     
-    $success = Invoke-ProfileGuardBackupEngine -SourcePath $sourcePath -DestinationPath $destinationPath -BackupType $Type -IsEncrypted $isEncrypted -SecurePassword $securePassword -LogContext "MANUAL" -WarningAction SilentlyContinue
-    
+    # Forzamos que el motor muestre errores en pantalla en modo manual
+    $success = Invoke-ProfileGuardBackupEngine -SourcePath $sourcePath -DestinationPath $destinationPath -BackupType $Type -CompressionLevel $compressionLevel -IsEncrypted $isEncrypted -SecurePassword $securePassword -LogContext "MANUAL" -WarningAction Continue
+
     # --- 6. Reporte y Limpieza de Contraseña ---
     if ($success) {
         Write-Host "`n[EXITO] Respaldo manual completado exitosamente." -ForegroundColor Green
         
-        if ($isEncrypted -and $passMethod -ne '1') {
+        # --- SECCIÓN MODIFICADA: GUARDADO CONDICIONAL ---
+        # Solo guardamos si estaba cifrado, fue generada aleatoriamente (metodo 2) Y el usuario dijo 'S'
+        if ($isEncrypted -and $passMethod -eq '2' -and $savePasswordToFileChoice.ToUpper() -eq 'S') { # <--- CAMBIO AQUÍ: Añadida condición de la elección del usuario
             try {
-                $passwordPath = Join-Path $destinationPath "Password_Generada_$(Get-Date -Format 'yyyyMMdd').txt"
-                Set-Content -Path $passwordPath -Value $passwordTextForFile -Encoding utf8
+                $passwordPath = Join-Path $destinationPath "Password_Generada_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+                # Usamos .NET directamente para asegurar UTF-8 sin BOM
+                $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                [System.IO.File]::WriteAllText($passwordPath, $passwordTextForFile, $utf8NoBom)
+
                 Write-Warning "¡IMPORTANTE! La contrasena se ha guardado en: '$passwordPath'"
-                Write-Warning "Mueva este archivo de contrasena a un lugar seguro"
+                Write-Warning "Mueva este archivo de contrasena a un lugar seguro y bórrelo de aquí."
+                Write-Log -LogLevel ACTION -Message "MANUAL-BACKUP: Contraseña generada guardada en archivo de texto a petición del usuario."
             } catch {
                 Write-Error "No se pudo guardar el archivo de contrasena en '$passwordPath'."
+                Write-Error "Error: $($_.Exception.Message)"
                 Write-Error "TU CONTRASENA ES: $passwordTextForFile"
                 Write-Error "¡GUARDALA MANUALMENTE AHORA!"
-                Read-Host "Presiona Enter DESPUES de guardar la contrasena..."
+                Write-Log -LogLevel ERROR -Message "MANUAL-BACKUP: Fallo al guardar el archivo de contraseña de texto."
             }
+        } elseif ($isEncrypted -and $passMethod -eq '2' -and $savePasswordToFileChoice.ToUpper() -ne 'S') {
+             # Recordatorio final si eligieron no guardar
+             Write-Host "`n[RECORDATORIO] Elegiste no guardar la contraseña en archivo. Esperamos que la hayas anotado." -ForegroundColor Gray
         }
+        # --- FIN SECCIÓN MODIFICADA ---
+
     } else {
-        Write-Error "FALLO: El motor de respaldo reporto un error. Revisa el log para mas detalles."
+        Write-Error "`nFALLO: El motor de respaldo reporto un error."
+        Write-Host "Revisa los mensajes anteriores o el archivo de registro (Log) para mas detalles." -ForegroundColor Yellow
     }
     
     # Limpieza final de variables sensibles
     $securePassword = $null
     $passwordTextForFile = $null
+    $savePasswordToFileChoice = $null
     [GC]::Collect()
     Read-Host "`nPresiona Enter para volver..."
 }
@@ -355,6 +398,10 @@ function Invoke-ProfileGuardBackupEngine {
         [Parameter(Mandatory=$true)]
         [ValidateSet('Full', 'Incremental', 'Differential')]
         [string]$BackupType,
+
+		[Parameter(Mandatory=$false)] # Opcional, por defecto será 'Fast'
+        [ValidateSet('Fast', 'Max')]
+        [string]$CompressionLevel = 'Fast', # Valor por defecto si no se especifica
 
         [Parameter(Mandatory=$true)]
         [bool]$IsEncrypted,
@@ -412,16 +459,28 @@ function Invoke-ProfileGuardBackupEngine {
             }
         }
     }
-    Write-Log -LogLevel INFO -Message "[$LogContext] Modo de respaldo: '$currentBackupType'. Buscando archivos modificados desde $referenceDate."
-
-    # --- 4. Encontrar archivos a respaldar ---
-    $filesToBackup = Get-ChildItem -Path $SourcePath -Recurse -File | Where-Object { $_.LastWriteTime -gt $referenceDate }
+	
+    # --- 4. Encontrar archivos a respaldar (LÓGICA PROFESIONAL: BIT DE ARCHIVO) ---
+    Write-Log -LogLevel INFO -Message "[$LogContext] Escaneando directorio en busca de cambios (usando atributos de archivo)..."
+    
+    # Obtenemos todos los archivos
+    $allFiles = Get-ChildItem -Path $SourcePath -Recurse -File
+    
+    # FILTRO ROBUSTO:
+    # Seleccionamos el archivo SI:
+    # 1. Su fecha de modificación es posterior a la referencia (criterio clásico).
+    #    - O -
+    # 2. Tiene el atributo 'Archive' encendido (indicando que es nuevo, copiado o modificado).
+    $filesToBackup = $allFiles | Where-Object { 
+        ($_.LastWriteTime -gt $referenceDate) -or 
+        ($_.Attributes -band [System.IO.FileAttributes]::Archive)
+    }
     
     if ($filesToBackup.Count -eq 0) {
-        Write-Log -LogLevel INFO -Message "[$LogContext] No se encontraron archivos nuevos o modificados. Respaldo omitido."
-        return $true # Se considera un "exito"
+        Write-Log -LogLevel INFO -Message "[$LogContext] No se encontraron archivos con cambios pendientes (Atributo 'Archive' o fecha reciente). Respaldo omitido."
+        return $true
     }
-    Write-Log -LogLevel INFO -Message "[$LogContext] Se respaldaran $($filesToBackup.Count) archivos."
+    Write-Log -LogLevel INFO -Message "[$LogContext] Se respaldaran $($filesToBackup.Count) archivos detectados como nuevos o modificados."
 
     # --- 5. Preparar argumentos de Cifrado ---
     $switch_Password = $null
@@ -457,17 +516,19 @@ function Invoke-ProfileGuardBackupEngine {
     $archiveName = "Backup_$(Split-Path $SourcePath -Leaf)_$timestamp$archiveNameSuffix.7z"
     $archivePath = Join-Path $DestinationPath $archiveName
     
+    # Determinamos el switch de 7-Zip según la elección
+    # -mx=5 es Rápido (Normal), -mx=9 es Ultra (Máximo)
+    $switch_Compression = if ($CompressionLevel -eq 'Max') { "-mx=9" } else { "-mx=5" }
+
+    Write-Log -LogLevel INFO -Message "[$LogContext] Configurando 7-Zip con nivel de compresion: $CompressionLevel ($switch_Compression)."
+
     $7zArgs = @(
         "a"                     # Añadir a un archivo
         "`"$archivePath`""      # Archivo de salida
         "@`"$tempListFile`""    # Archivo de lista
         "-t7z"                  # Formato 7z
-        "-mx=5"                 # Nivel 5 (Rapido)
+        $switch_Compression     # <--- MODIFICADO: Usamos la variable aquí
     )
-    if ($IsEncrypted) {
-        $7zArgs += $switch_HeaderEncrypt
-        $7zArgs += $switch_Password
-    }
 
     if ($PSCmdlet.ShouldProcess($archivePath, "Crear Respaldo ($currentBackupType)")) {
         Write-Log -LogLevel ACTION -Message "[$LogContext] Ejecutando 7z.exe $archivePath"
@@ -479,6 +540,27 @@ function Invoke-ProfileGuardBackupEngine {
         # --- 8. Verificacion y Reporte ---
         if ($process.ExitCode -eq 0) {
             Write-Log -LogLevel ACTION -Message "[$LogContext] Exito al crear '$archiveName'."
+			
+			# --- NUEVO: Limpieza del Bit de Archivo (Archive Attribute) ---
+            # Como el respaldo fue exitoso, "apagamos" la bandera 'Archive' en los archivos de origen
+            # para indicar que ya están respaldados y no incluirlos en el próximo incremental/diferencial.
+            Write-Log -LogLevel INFO -Message "[$LogContext] Limpiando atributo 'Archive' en los $($filesToBackup.Count) archivos de origen..."
+            foreach ($file in $filesToBackup) {
+                try {
+                    # Obtenemos el objeto archivo
+                    $fileItem = Get-Item -LiteralPath $file.FullName -ErrorAction Stop
+                    # Si tiene el atributo Archive encendido...
+                    if ($fileItem.Attributes -band [System.IO.FileAttributes]::Archive) {
+                        # ...lo apagamos usando una operación bitwise AND NOT
+                        $fileItem.Attributes = ($fileItem.Attributes -band (-not [System.IO.FileAttributes]::Archive))
+                    }
+                } catch {
+                    # Si falla (ej. archivo en uso o solo lectura), solo registramos una advertencia y seguimos.
+                    # El archivo se volverá a incluir en el próximo respaldo, lo cual es seguro.
+                     Write-Log -LogLevel WARN -Message "[$LogContext] No se pudo limpiar el atributo 'Archive' en: $($file.FullName). Se reintentará en el próximo respaldo."
+                }
+            }
+            Write-Log -LogLevel INFO -Message "[$LogContext] Limpieza de atributos completada."
 
             # --- 9. Actualizar Manifiesto (Metadatos) ---
             $newBackupEntry = [PSCustomObject]@{
@@ -552,6 +634,13 @@ function Configure-AutoBackupSchedule {
     Write-Host "   [1] Incremental  [2] Diferencial  [3] Completo"
     $backupTypeChoice = Read-Host "Elige (1-3)"
     $Type = switch($backupTypeChoice) { '1' { 'Incremental' } '2' { 'Differential' } '3' { 'Full' } default { 'Incremental' } }
+	
+	# --- Selección de Compresión para la Tarea ---
+    Write-Host "`n[4.5/5] Nivel de compresion para la tarea:" -ForegroundColor Yellow
+    Write-Host "   [1] Rapido (Nivel 5) - Recomendado para la mayoria de los casos."
+    Write-Host "   [2] Maximo (Nivel 9) - Ideal para tareas nocturnas (mas lento, menos espacio)."
+    $compChoiceTask = Read-Host "Elige (1-2) [Por defecto: 1]"
+    $compressionLevelTask = if ($compChoiceTask -eq '2') { 'Max' } else { 'Fast' }
 
     Write-Host "`n[5/5] ¿Cifrar respaldo?" -ForegroundColor Yellow
     $encryptChoice = Read-Host "(S/N)"
@@ -589,59 +678,103 @@ function Configure-AutoBackupSchedule {
     # Variable auxiliar para insertar el caracter '$' de forma segura sin usar acentos graves.
     $d = "$"
 
-    # --- INICIO DE LA PLANTILLA DEL SCRIPT GENERADO ---
+    # --- INICIO DE LA PLANTILLA DEL SCRIPT GENERADO (VERSIÓN SEGURA FINAL CORREGIDA) ---
     $scriptContent = @"
 ${d}ErrorActionPreference = 'Stop'
 
 # --- CONFIGURACION DE LOGS ---
 ${d}logDir = Join-Path ${d}env:ProgramData 'ProfileGuard_Logs'
-${d}taskLogFile = Join-Path ${d}logDir 'Backup_Log.txt'
+# Usamos un nombre de variable único para el archivo de log de esta tarea
+${d}taskLogFile = Join-Path ${d}logDir 'Backup_Auto_Log.txt'
 try { if (-not (Test-Path ${d}logDir)) { New-Item -Path ${d}logDir -ItemType Directory -Force -ErrorAction Stop | Out-Null } } catch { exit 1 }
+# La función usa la variable única y fuerza UTF8
 function Write-TaskLog { param([string]${d}Message) "${d}(Get-Date) - ${d}Message" | Out-File -FilePath ${d}taskLogFile -Append -Encoding utf8 }
 
 Write-TaskLog "--- Iniciando Tarea '$($taskName.Replace("'", "''"))' ---"
 
 # --- DEFINICION DE VARIABLES ---
+# Nota: Usamos Replace("'", "''") para escapar comillas simples en rutas si las hubiera.
 ${d}mainScriptToImport = '$($mainScriptFullPath.Replace("'", "''"))\ProfileGuard.ps1'
 ${d}taskSourcePath = '$($sourcePath.Replace("'", "''"))'
 ${d}taskDestinationPath = '$($destinationPath.Replace("'", "''"))'
 ${d}taskBackupType = '$Type'
 ${d}taskIsEncrypted = $isEncryptedBoolStr
+${d}taskCompressionLevel = '$compressionLevelTask'
 
 # --- SEGURIDAD DPAPI ---
+# Inicializamos variables criticas en null
 ${d}passwordArg = ${d}null
 ${d}ptr = ${d}null
 
 try {
     if (${d}taskIsEncrypted) {
         Write-TaskLog "Descifrando credencial..."
+        # Usamos PSScriptRoot para que el script busque el .cred en su misma carpeta
         ${d}credFile = Join-Path "${d}PSScriptRoot" '$($taskName.Replace("'", "''")).cred'
-        if (-not (Test-Path ${d}credFile)) { throw "Archivo de credencial no encontrado: ${d}credFile" }
         
+        if (-not (Test-Path ${d}credFile)) { 
+            throw "Archivo de credencial no encontrado. Se esperaba en: ${d}credFile. Asegurate de que el archivo .cred no haya sido movido o borrado." 
+        }
+        
+        # Leemos el contenido cifrado y eliminamos espacios en blanco
         ${d}encryptedData = (Get-Content ${d}credFile -Raw).Trim()
+        
+        # 1. Convertimos el texto cifrado a SecureString usando DPAPI (contexto del usuario actual)
         ${d}secureString = ${d}encryptedData | ConvertTo-SecureString -ErrorAction Stop
+        
+        # 2. Creamos un BSTR (Binary String) en memoria NO administrada para poder leerla.
+        # ¡ESTO ES LO QUE DEBE LIMPIARSE CORRECTAMENTE DESPUÉS!
         ${d}ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR(${d}secureString)
+        
+        # 3. Copiamos el BSTR a una cadena de .NET normal (Managed String) para pasarla al motor.
         ${d}passwordArg = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto(${d}ptr)
     }
 
     Write-TaskLog "Importando motor principal y ejecutando respaldo..."
 
     if (-not (Test-Path ${d}mainScriptToImport)) { throw "Script principal no encontrado en: ${d}mainScriptToImport" }
+    # Importamos el script principal para tener acceso a la funcion del motor
     . "${d}mainScriptToImport"
 
-    ${d}success = Invoke-ProfileGuardBackupEngine -SourcePath ${d}taskSourcePath -DestinationPath ${d}taskDestinationPath -BackupType ${d}taskBackupType -IsEncrypted ${d}taskIsEncrypted -PlainTextPassword ${d}passwordArg -LogContext 'AUTO:$($taskName.Replace("'", "''"))'
+    # Ejecutamos el motor con los parámetros preparados.
+    # Importante: Pasamos la contraseña en texto plano (${d}passwordArg) porque el motor lo requiere asi para 7-Zip.
+    ${d}success = Invoke-ProfileGuardBackupEngine -SourcePath ${d}taskSourcePath -DestinationPath ${d}taskDestinationPath -BackupType ${d}taskBackupType -CompressionLevel ${d}taskCompressionLevel -IsEncrypted ${d}taskIsEncrypted -PlainTextPassword ${d}passwordArg -LogContext 'AUTO:$($taskName.Replace("'", "''"))'
 
     if (${d}success) { Write-TaskLog "EXITO. El respaldo finalizo correctamente." } else { Write-TaskLog "FALLO. El motor reporto un error." }
 
 } catch {
-    Write-TaskLog "ERROR CRITICO: ${d}(${d}_.Exception.Message)"
-    Write-Host "ERROR CRITICO: ${d}(${d}_.Exception.Message)" -ForegroundColor Red
+    # Captura global de errores en el script de la tarea
+    ${d}errMsg = "ERROR CRITICO durante la ejecución de la tarea: ${d}(${d}_.Exception.Message)"
+    Write-TaskLog ${d}errMsg
+    # Escribimos en host por si alguien esta mirando la consola (aunque suele estar oculta)
+    Write-Host ${d}errMsg -ForegroundColor Red
+    exit 1 # Salimos con error
 } finally {
-    # --- LIMPIEZA Y CIERRE ROBUSTO ---
-    ${d}ptr = ${d}null
-    ${d}passwordArg = ${d}null
-    [GC]::Collect()
+    # --- LIMPIEZA Y CIERRE ROBUSTO (VERSIÓN SEGURA) ---
     
+    # 1. Liberación CRITICA de memoria no administrada (el puntero BSTR)
+    # Verificamos si el puntero existe y no es cero antes de intentar liberarlo
+    # CORRECCIÓN AQUÍ: Se cambio $null por ${d}null para que se escriba literalmente en el script generado.
+    if (${d}null -ne ${d}ptr -and [System.IntPtr]::Zero -ne ${d}ptr) { # <--- CORRECCIÓN CRITICA AQUI
+        try {
+            # ZeroFreeBSTR borra el contenido de la memoria (lo llena de ceros)
+            # y luego libera la memoria no administrada para el SO.
+            [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR(${d}ptr)
+        } catch {
+            # Ignoramos errores aqui para no romper el flujo de cierre.
+        }
+    }
+    # Ahora si, es seguro anular la variable del puntero
+    ${d}ptr = ${d}null
+
+    # 2. Limpieza de variables administradas (la copia en texto plano)
+    ${d}passwordArg = ${d}null
+    
+    # 3. Forzar la recoleccion de basura inmediata
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+
+    # 4. Logging final protegido
     try {
         Write-TaskLog "--- Fin ---`n"
     } catch {
@@ -741,7 +874,7 @@ function Select-ProfileGuardTask {
     }
 }
 
-# --- FUNCION PRINCIPAL: Editar Tarea Programada ---
+# --- FUNCION PRINCIPAL: Editar Tarea Programada (CORREGIDA) ---
 function Edit-ScheduledTask {
     param()
     Clear-Host
@@ -786,6 +919,8 @@ function Edit-ScheduledTask {
     $generatedScriptPath = $null
     $currentBackupType = "Desconocido (No se pudo leer script)"
     $currentIsEncrypted = "Desconocido"
+    # NUEVO: Variable para la compresión actual
+    $currentCompressionLevel = "Desconocido" 
     $scriptContentLines = $null
 
     # 1. Encontrar la ruta del script
@@ -805,6 +940,13 @@ function Edit-ScheduledTask {
            if ($trimmedLine.StartsWith("`$taskBackupType = '") -and $trimmedLine.EndsWith("'")) {
                # Reemplaza el inicio y el fin para quedarse solo con el valor entre comillas
                $currentBackupType = $trimmedLine.Replace("`$taskBackupType = '", "").Replace("'", "")
+            }
+
+            # --- NUEVO: Deteccion del NIVEL DE COMPRESION ---
+            # Busca la linea exacta: $taskCompressionLevel = 'Algo'
+            if ($trimmedLine.StartsWith("`$taskCompressionLevel = '") -and $trimmedLine.EndsWith("'")) {
+               # Reemplaza el inicio y el fin para quedarse solo con el valor entre comillas
+               $currentCompressionLevel = $trimmedLine.Replace("`$taskCompressionLevel = '", "").Replace("'", "")
             }
     
             # --- Deteccion del ESTADO DE CIFRADO (Version Definitiva) ---
@@ -834,13 +976,15 @@ function Edit-ScheduledTask {
     Write-Host "=======================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "Configuracion Actual:" -ForegroundColor Yellow
-    Write-Host " - Horario: $scheduleSummary"
-    Write-Host " - Tipo:    $currentBackupType"
-    Write-Host " - Cifrado: $currentIsEncrypted (No editable)"
+    Write-Host " - Horario:    $scheduleSummary"
+    Write-Host " - Tipo:       $currentBackupType"
+    Write-Host " - Compresion: $currentCompressionLevel" 
+    Write-Host " - Cifrado:    $currentIsEncrypted (No editable)"
     Write-Host ""
     Write-Host "--- Acciones ---" -ForegroundColor Yellow
     Write-Host "   [1] Cambiar Horario / Frecuencia (Trigger)"
     Write-Host "   [2] Cambiar Tipo de Respaldo (Full/Inc/Diff)"
+    Write-Host "   [3] Cambiar Nivel de Compresion"
     Write-Host ""
     Write-Host "   [D] ELIMINAR Tarea Completamente (Tarea + Scripts)" -ForegroundColor Red
     Write-Host "   [V] Volver" -ForegroundColor Gray
@@ -921,6 +1065,45 @@ function Edit-ScheduledTask {
                 Write-Warning "Operacion cancelada o tipo no valido seleccionado."
             }
         }
+        # --- NUEVO BLOQUE: CAMBIAR NIVEL DE COMPRESIÓN ---
+        '3' { 
+            if ($null -eq $scriptContentLines) { Write-Warning "No se puede editar la compresion porque no se pudo leer el script generado."; return }
+
+            Write-Host "`n--- Nivel de Compresion ---" -ForegroundColor Yellow
+            Write-Host "Actual: $currentCompressionLevel"
+            Write-Host "   [1] Rapido (Nivel 5)"
+            Write-Host "   [2] Maximo (Nivel 9)"
+            $compChoice = Read-Host "Elige (1-2)"
+            $newCompression = switch($compChoice) { '1' { 'Fast' } '2' { 'Max' } default { $null } }
+
+            if ($newCompression -and $newCompression -ne $currentCompressionLevel) {
+                try {
+                    $newScriptLines = @()
+                    foreach ($line in $scriptContentLines) {
+                        # Buscamos la variable correcta con el prefijo '$task'
+                        if ($line.Trim().StartsWith("`$taskCompressionLevel = '")) {
+                            # Reemplazamos la linea completa con el nuevo valor
+                            $newScriptLines += "`$taskCompressionLevel = '$newCompression'"
+                        } else {
+                            $newScriptLines += $line
+                        }
+                    }
+                    
+                    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+                    [System.IO.File]::WriteAllLines($generatedScriptPath, $newScriptLines, $utf8NoBom)
+
+                    Write-Host "`n[EXITO] Nivel de compresion actualizado a '$newCompression' en el script generador." -ForegroundColor Green
+					Write-Log -LogLevel ACTION -Message "EDIT-TASK: Se cambio el nivel de compresion de la tarea '$taskName' a '$newCompression'."
+                    $currentCompressionLevel = $newCompression
+                } catch {
+                     Write-Error "Fallo al actualizar el archivo script: $generatedScriptPath"
+                     Write-Error $_.Exception.Message
+                }
+            } else {
+                Write-Warning "Operacion cancelada o nivel no valido seleccionado."
+            }
+        }
+        # -------------------------------------------------
         'D' { # --- ELIMINAR TAREA ---
             Write-Warning "`n¡ADVERTENCIA DE ELIMINACION!"
             Write-Host "Se eliminara la tarea de Windows '$taskName'."
@@ -1616,18 +1799,54 @@ function Ensure-7ZipIsInstalled {
     }
 }
 
-# --- Generador de Contraseñas ---
+# --- Generador de Contraseñas Seguro ---
 function Generate-SecurePassword {
-    Write-Log -LogLevel INFO -Message "BACKUP/7-Zip: Generando nueva contrasena segura."
+    Write-Log -LogLevel INFO -Message "SECURITY: Generando nueva contraseña segura (Método Moderno CSPRNG)."
+    
+    # Definimos la longitud deseada y el conjunto de caracteres permitidos.
+    # Incluimos mayúsculas, minúsculas, números y una selección de símbolos seguros.
+    $length = 32
+    $charSet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_-+=[]{}|:<>?'
+    $charSetLength = $charSet.Length
+    
     try {
-        Add-Type -AssemblyName System.Web
-        # 32 caracteres, 4 caracteres no alfanumericos
-        return [System.Web.Security.Membership]::GeneratePassword(32, 4)
+        # 1. Crear un buffer de bytes para almacenar la aleatoriedad.
+        # Necesitamos un byte por cada carácter que tendrá la contraseña.
+        $randomBytes = New-Object byte[] $length
+
+        # 2. Instanciar el Generador de Números Aleatorios Criptográficamente Seguro (CSPRNG).
+        # Esta clase es el estándar de seguridad en .NET y funciona en todas las versiones de PowerShell.
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        
+        # 3. Llenar el buffer con bytes aleatorios criptográficamente fuertes.
+        $rng.GetBytes($randomBytes)
+
+        # 4. Convertir los bytes aleatorios en caracteres de nuestro conjunto.
+        # Usamos un StringBuilder para una concatenación eficiente en memoria.
+        $passwordBuilder = [System.Text.StringBuilder]::new($length)
+        
+        foreach ($byte in $randomBytes) {
+            # Usamos el operador módulo (%) para mapear el valor del byte (0-255) 
+            # a un índice válido dentro de nuestro conjunto de caracteres.
+            $index = $byte % $charSetLength
+            $passwordBuilder.Append($charSet[$index]) | Out-Null
+        }
+
+        # 5. Limpiar recursos de seguridad.
+        $rng.Dispose()
+
+        # Devolver la contraseña final como cadena.
+        return $passwordBuilder.ToString()
+
     } catch {
-        Write-Warning "No se pudo usar System.Web para generar contrasena. Usando metodo de fallback."
-        $chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+'
-        $password = -join ($chars | Get-Random -Count 32)
-        return $password
+        # Fallback de emergencia extremo (muy improbable que ocurra).
+        Write-Warning "Error inesperado en el generador CSPRNG. Usando método de respaldo simple."
+        Write-Log -LogLevel ERROR -Message "SECURITY CRITICO: Fallo en Generate-SecurePassword moderno. Error: $($_.Exception.Message)"
+        
+        # Get-Random no es criptográficamente seguro, pero sirve como último recurso para no detener el script.
+        # Usamos un set más simple para asegurar compatibilidad.
+        $fallbackChars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+        return -join ($fallbackChars | Get-Random -Count 32)
     }
 }
 
@@ -2333,6 +2552,9 @@ function Move-UserProfileFolders {
 # ===================================================================
 
 function Start-ProfileGuardMenu {
+
+	Invoke-FullRepoUpdater
+
     $mainChoice = ''
     do {
         # 1. Buscamos todas las tareas "Backup_*"
