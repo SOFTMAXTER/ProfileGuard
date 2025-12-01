@@ -16,7 +16,7 @@
     SOFTMAXTER
 
 .VERSION
-    1.1.5
+    1.1.6
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
     [string]$LogContext
 )
 
-$script:Version = "1.1.5"
+$script:Version = "1.1.6"
 
 function Write-Log {
     [CmdletBinding()]
@@ -262,7 +262,7 @@ function Invoke-BackupCreation {
         Write-Warning "No se selecciono una carpeta de origen. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
     
-    Write-Host "`n[+] Paso 2: Selecciona la CARPETA de Destino donde se guardara el respaldo." -ForegroundColor Yellow
+    Write-Host "\n[+] Paso 2: Selecciona la CARPETA donde quieres GUARDAR el archivo de respaldo." -ForegroundColor Yellow
     $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Paso 2: Elige la Carpeta de Destino del Respaldo"
     if ([string]::IsNullOrWhiteSpace($destinationPath)) {
         Write-Warning "No se selecciono una carpeta de destino. Operacion cancelada." ; Start-Sleep -Seconds 2; return
@@ -1153,8 +1153,8 @@ function Manage-ExistingBackups {
     Write-Host "-------------------------------------------------------"
     
     # --- 1. Seleccionar la carpeta de destino ---
-    Write-Host "`n[+] Por favor, selecciona la CARPETA de Destino que contiene el manifiesto ('manifest.json')." -ForegroundColor Yellow
-    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de Destino de tus Respaldos"
+    Write-Host "`n[+] Por favor, selecciona la carpeta DONDE ESTAN GUARDADOS tus archivos de respaldo y el archivo 'manifest.json'." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de tus Respaldos"
     if ([string]::IsNullOrWhiteSpace($destinationPath)) {
         Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
@@ -1266,9 +1266,23 @@ function Manage-ExistingBackups {
                 Read-Host "Presiona Enter para continuar..."
             }
             "R" {
-                $selectedBackups = $allBackups | Where-Object { $_.Selected }
-                if ($selectedBackups.Count -eq 0) {
-                    Write-Warning "No has seleccionado ningun respaldo para restaurar." ; Start-Sleep -Seconds 2; continue
+                 $selectedBackups = $allBackups | Where-Object { $_.Selected }
+                 if ($selectedBackups.Count -eq 0) {
+                     Write-Warning "No has seleccionado ningun respaldo para restaurar." ; Start-Sleep -Seconds 2; continue
+                }
+
+                # --- NUEVO: Advertencia de múltiples selecciones ---
+                if ($selectedBackups.Count -gt 1) {
+                    Write-Warning "`n¡ATENCION! Has seleccionado {$($selectedBackups.Count)} puntos de restauracion diferentes."
+                    Write-Warning "Todas las cadenas seleccionadas se restauraran y MEZCLARAN en la MISMA carpeta de destino."
+                    Write-Warning "Esto podria causar que archivos con el mismo nombre se sobrescriban entre si."
+                    Write-Host ""
+                    $confirmMulti = Read-Host "¿Estas seguro de que deseas continuar? (S/N)"
+                    if ($confirmMulti.ToUpper() -ne 'S') {
+                        Write-Host "Operacion cancelada." -ForegroundColor Gray
+                        Start-Sleep -Seconds 1
+                        continue
+                    }
                 }
                 # PASAMOS LA CREDENCIAL CARGADA A LA FUNCION DE RESTAURACION
                 Invoke-RestoreBackupChain -Manifest $manifest -DestinationPath $destinationPath -SelectedBackups $selectedBackups -MasterSecurePassword $loadedCredential
@@ -1342,7 +1356,7 @@ function Invoke-PruneBackups {
 
     Write-Host "`n--- Politica de Retencion de Respaldos ---" -ForegroundColor Magenta
     
-    $keepCountInput = Read-Host "Introduce el numero de cadenas de Respaldo COMPLETO que deseas conservar (ej: 2)"
+    $keepCountInput = Read-Host "Introduce cuantos CONJUNTOS DE VERSIONES (cadenas completas) recientes deseas mantener (ej: 2)"
     if (-not ($keepCountInput -match '^\d+$') -or [int]$keepCountInput -lt 1) {
         Write-Warning "Entrada invalida. Se debe conservar al menos 1 cadena. Cancelando."
         Start-Sleep -Seconds 2
@@ -1462,8 +1476,8 @@ function Verify-BackupIntegrity {
     Write-Host "-------------------------------------------------------"
     
     # --- 1. Seleccionar la carpeta de destino ---
-    Write-Host "`n[+] Por favor, selecciona la CARPETA de Destino que contiene el manifiesto." -ForegroundColor Yellow
-    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de Destino de tus Respaldos"
+    Write-Host "`n[+] Por favor, selecciona la carpeta DONDE ESTAN GUARDADOS tus archivos de respaldo y el archivo 'manifest.json'." -ForegroundColor Yellow
+    $destinationPath = Select-PathDialog -DialogType 'Folder' -Title "Selecciona la Carpeta de tus Respaldos"
     if ([string]::IsNullOrWhiteSpace($destinationPath)) {
         Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
@@ -1548,14 +1562,15 @@ function Invoke-RestoreBackupChain {
         [PSCustomObject]$Manifest,
         [string]$DestinationPath,
         [PSCustomObject[]]$SelectedBackups,
-        # Nuevo parametro opcional para pasar una contraseña ya descifrada
+        # Nuevo parametro opcional para pasar una contraseña ya descifrada (SecureString)
         [System.Security.SecureString]$MasterSecurePassword = $null
     )
     
     if (-not (Ensure-7ZipIsInstalled)) { return }
     
-    Write-Host "`n[+] Selecciona la CARPETA de Destino donde se restauraran los archivos." -ForegroundColor Yellow
-    $restorePath = Select-PathDialog -DialogType 'Folder' -Title "Elige la Carpeta de Destino de la Restauracion"
+    # PROPUESTA:
+    Write-Host "\n[+] Selecciona la CARPETA donde quieres EXTRAER los archivos recuperados." -ForegroundColor Yellow
+    $restorePath = Select-PathDialog -DialogType 'Folder' -Title "Elige la carpeta para extraer los archivos"
     if ([string]::IsNullOrWhiteSpace($restorePath)) {
         Write-Warning "No se selecciono una carpeta. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
@@ -1578,11 +1593,12 @@ function Invoke-RestoreBackupChain {
             } else {
                 $parentFound = $Manifest.Backups | Where-Object { $_.File -eq $current.Parent } | Select-Object -First 1
                 if ($null -eq $parentFound) {
+                    # --- CORRECCION: Mensaje unificado ---
                     $msg = "CRITICO: Cadena rota. Falta el archivo padre en el registro: '$($current.Parent)'"
                     Write-Host $msg -ForegroundColor Red
                     Write-Log -LogLevel ERROR -Message "RESTORE: $msg"
-                     $brokenChain = $true
-                     break
+                    $brokenChain = $true
+                    break
                 }
                 $current = $parentFound
             }
@@ -1630,12 +1646,19 @@ function Invoke-RestoreBackupChain {
                     $sessionPasswords[$backupFile.File] = $passwordToUse
                 }
                 
-                # Convertir SecureString a BSTR para 7-Zip de forma segura
-                $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordToUse)
-                $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($ptr)
-                $7zArgs += "-p$plainPass"
-                # Limpieza inmediata del texto plano en memoria no gestionada
-                [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+                # SEGURIDAD CRITICA: Manejo de punteros para 7-Zip
+                $ptr = [System.IntPtr]::Zero
+                try {
+                    $ptr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($passwordToUse)
+                    $plainPass = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($ptr)
+                    $7zArgs += "-p$plainPass"
+                } finally {
+                    # Limpieza inmediata del texto plano en memoria no gestionada
+                    if ($ptr -ne [System.IntPtr]::Zero) {
+                        [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+                        $ptr = [System.IntPtr]::Zero
+                    }
+                }
             }
             
             # Ejecutar 7-Zip visible
@@ -1659,8 +1682,11 @@ function Invoke-RestoreBackupChain {
         }
     }
     
-    # Limpieza de memoria
-    $sessionPasswords = $null; [GC]::Collect()
+    # --- CORRECCION: Limpieza de memoria mejorada ---
+    $sessionPasswords = $null
+    # Tambien anulamos la referencia al parametro maestro antes del GC
+    $MasterSecurePassword = $null 
+    [GC]::Collect()
     Read-Host "`nPresiona Enter para continuar..."
 }
 
@@ -2293,7 +2319,8 @@ function Move-UserProfileFolders {
     }
     $registryPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
 
-    Write-Host "`n[+] Paso 1: Selecciona la carpeta RAIZ donde se crearan las nuevas carpetas de usuario." -ForegroundColor Yellow
+    # PROPUESTA:
+    Write-Host "\n[+] Paso 1: Selecciona la NUEVA UBICACION BASE donde se moverán tus carpetas personales." -ForegroundColor Yellow
     Write-Host "    (Ejemplo: Si seleccionas 'D:\MisDatos', se crearan 'D:\MisDatos\Escritorio', 'D:\MisDatos\Documentos', etc.)" -ForegroundColor Gray
     $newBasePath = Select-PathDialog -DialogType Folder -Title "Selecciona la NUEVA UBICACION BASE para tus carpetas"
     
