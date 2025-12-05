@@ -32,6 +32,8 @@ echo.
 :: Establecer el titulo de la ventana
 title ProfileGuard v1.1.7 by SOFTMAXTER
 
+mode con: cols=110 lines=35
+
 :: Ruta al script de PowerShell (asume que esta en una carpeta llamada SCRIPT)
 set "scriptPath=%~dp0Script\ProfileGuard.ps1"
 
