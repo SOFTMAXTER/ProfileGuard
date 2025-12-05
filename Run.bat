@@ -30,7 +30,7 @@ echo Privilegios de Administrador obtenidos. Ejecutando Profile Guard...
 echo.
 
 :: Establecer el titulo de la ventana
-title ProfileGuard v1.1.6 by SOFTMAXTER
+title ProfileGuard v1.1.7 by SOFTMAXTER
 
 :: Ruta al script de PowerShell (asume que esta en una carpeta llamada SCRIPT)
 set "scriptPath=%~dp0Script\ProfileGuard.ps1"
