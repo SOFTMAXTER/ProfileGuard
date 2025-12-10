@@ -16,7 +16,7 @@
     SOFTMAXTER
 
 .VERSION
-    1.1.7
+    1.1.8
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
     [string]$LogContext
 )
 
-$script:Version = "1.1.6"
+$script:Version = "1.1.8"
 
 function Write-Log {
     [CmdletBinding()]
@@ -699,7 +699,7 @@ ${d}ErrorActionPreference = 'Stop'
 # --- CONFIGURACION DE LOGS ---
 ${d}logDir = Join-Path ${d}env:ProgramData 'ProfileGuard_Logs'
 # Usamos un nombre de variable único para el archivo de log de esta tarea
-${d}taskLogFile = Join-Path ${d}logDir 'Backup_Auto_Log.txt'
+${d}taskLogFile = Join-Path ${d}logDir 'Backup_Log.txt'
 try { if (-not (Test-Path ${d}logDir)) { New-Item -Path ${d}logDir -ItemType Directory -Force -ErrorAction Stop | Out-Null } } catch { exit 1 }
 # La función usa la variable única y fuerza UTF8
 function Write-TaskLog { param([string]${d}Message) "${d}(Get-Date) - ${d}Message" | Out-File -FilePath ${d}taskLogFile -Append -Encoding utf8 }
@@ -1119,7 +1119,7 @@ function Edit-ScheduledTask {
         }
         # -------------------------------------------------
         'D' { # --- ELIMINAR TAREA ---
-            Write-Warning "`n¡ADVERTENCIA DE ELIMINACION!"
+            Write-Warning "`n DE ELIMINACION"
             Write-Host "Se eliminara la tarea de Windows '$taskName'."
             if ($generatedScriptPath) {
                  Write-Host "Tambien se eliminaran los archivos asociados en 'BackupScripts':"
@@ -1304,7 +1304,7 @@ function Manage-ExistingBackups {
             "D" {
                 $selectedBackups = $allBackups | Where-Object { $_.Selected }
                 if ($selectedBackups.Count -eq 0) { Write-Warning "No has seleccionado ningun respaldo para eliminar." ; Start-Sleep -Seconds 2; continue }
-                Write-Warning "¡ADVERTENCIA! Eliminar un respaldo COMPLETO o INCREMENTAL puede romper la cadena de restauracion."
+                Write-Warning "Eliminar un respaldo COMPLETO o INCREMENTAL puede romper la cadena de restauracion."
                 $confirm = Read-Host "¿Estas seguro de eliminar los $($selectedBackups.Count) archivos Y sus entradas del manifiesto? (S/N)"
                 if ($confirm.ToUpper() -eq 'S') {
                     try {
@@ -2512,16 +2512,39 @@ function Move-UserProfileFolders {
         }
     }
 
-    Write-Warning "`n¡ADVERTENCIA MUY IMPORTANTE!"
-    Write-Warning "- Cierra TODAS las aplicaciones que puedan estar usando archivos de estas carpetas."
-    Write-Warning "- Si eliges 'Mover y Registrar', el proceso puede tardar MUCHO tiempo."
-    Write-Warning "- NO interrumpas el proceso una vez iniciado."
+    # --- BLOQUE DE ADVERTENCIA DE SEGURIDAD MEJORADO ---
+    Write-Warning "`nDE SEGURIDAD CRITICA - LEER ANTES DE CONTINUAR"
+    Write-Host "---------------------------------------------------------------------" -ForegroundColor Red
+    Write-Host "1. ARCHIVOS EN USO:" -ForegroundColor Yellow
+    Write-Host "   Si tienes archivos abiertos (Word, Excel, Navegadores, Fotos, etc.)"
+    Write-Host "   en las carpetas que vas a mover, la operacion FALLARA o quedara a medias."
+    Write-Host "   --> CIERRA TODO AHORA MISMO <--" -ForegroundColor Red
+    
+    Write-Host "`n2. TIEMPO DE OPERACION:" -ForegroundColor Yellow
+    Write-Host "   Si eliges 'Mover y Registrar', esto puede tardar mucho dependiendo"
+    Write-Host "   de la cantidad de datos. NO cierres la ventana negra."
+    
+    Write-Host "`n3. RIESGO:" -ForegroundColor Yellow
+    Write-Host "   Interrumpir este proceso puede dejar tu perfil de usuario inestable."
+    Write-Host "---------------------------------------------------------------------" -ForegroundColor Red
+
+    # --- Comprobación proactiva (Opcional pero recomendada) ---
+    $openFilesWarning = $false
+    $commonProcesses = @("WINWORD", "EXCEL", "POWERPNT", "ACROBAT", "CHROME", "MSEDGE", "FIREFOX", "PHOTOS")
+    $runningApps = Get-Process -Name $commonProcesses -ErrorAction SilentlyContinue
+    
+    if ($runningApps) {
+        Write-Host "`n[ALERTA] Se han detectado aplicaciones abiertas que podrian interferir:" -ForegroundColor Magenta
+        foreach ($app in $runningApps | Select-Object -Unique ProcessName) {
+            Write-Host "   - $($app.ProcessName)" -ForegroundColor Magenta
+        }
+        Write-Warning "Se recomienda cerrarlas manualmente antes de continuar."
+    }
 
     Write-Host ""
     Write-Host "--- TIPO DE ACCION ---" -ForegroundColor Yellow
     Write-Host "   [M] Mover Archivos Y Actualizar Registro (Accion Completa, Lenta)"
-    Write-Host "   [R] Solo Actualizar Registro (Rapido - ¡ASEGURATE de que los archivos ya estan en el destino" -ForegroundColor Red
-    Write-Host "       o el destino esta vacio!)" -ForegroundColor Red
+    Write-Host "   [R] Solo Actualizar Registro (Rapido - ¡Solo si YA moviste los archivos!)" -ForegroundColor Red
     Write-Host "   [N] Cancelar"
     
     $actionChoice = Read-Host "`nElige el tipo de accion a realizar"
