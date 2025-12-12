@@ -30,7 +30,7 @@ echo Privilegios de Administrador obtenidos. Ejecutando Profile Guard...
 echo.
 
 :: Establecer el titulo de la ventana
-title ProfileGuard v1.1.8 by SOFTMAXTER
+title ProfileGuard v1.1.9 by SOFTMAXTER
 
 mode con: cols=110 lines=35
 
