@@ -16,7 +16,7 @@
     SOFTMAXTER
 
 .VERSION
-    1.1.9
+    1.1.10
 #>
 
 [CmdletBinding()]
@@ -32,7 +32,7 @@ param(
     [string]$LogContext
 )
 
-$script:Version = "1.1.9"
+$script:Version = "1.1.10"
 
 function Write-Log {
     [CmdletBinding()]
@@ -1985,13 +1985,16 @@ function Invoke-SimpleRobocopyBackupMenu {
         Write-Host "   [1] Simple (Copiar y Actualizar)"
         Write-Host "       Copia archivos nuevos o modificados. No borra nada en el destino." -ForegroundColor Gray
         Write-Host "   [2] Sincronizacion (Espejo)"
-        Write-Host "       Hace que el destino sea identico al origen. Borra archivos en el destino." -ForegroundColor Red
+        Write-Host "       Hace que el destino sea identico al origen. Borra archivos EXTRAS en el destino." -ForegroundColor Red
+        Write-Host "   [3] Mover (Cortar y Pegar)" 
+        Write-Host "       Mueve los archivos al destino y los BORRA del origen. Libera espacio." -ForegroundColor Magenta
         
         $modeChoice = Read-Host "`nSelecciona el modo"
         
         switch ($modeChoice) {
             '1' { return 'Copy' }
             '2' { return 'Mirror' }
+            '3' { return 'Move' }
             default {
                 Write-Warning "Opcion invalida." ; Start-Sleep -Seconds 2
                 return $null
@@ -2005,7 +2008,7 @@ function Invoke-SimpleRobocopyBackupMenu {
     Write-Host "=======================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "--- Elige un tipo de respaldo ---" -ForegroundColor Yellow
-    Write-Host "   [1] Respaldo de Perfil de Usuario (Escritorio, Documentos, etc.)"
+    Write-Host "   [1] Respaldo de Perfil de Usuario (Seleccion Interactiva)"
     Write-Host "   [2] Respaldo de Carpeta o Archivo(s) Personalizado"
     Write-Host ""
     Write-Host "   [V] Volver al menu anterior" -ForegroundColor Red
@@ -2055,12 +2058,12 @@ function Invoke-SimpleRobocopyBackupMenu {
     }
 }
 
-# --- FUNCION 8: Logica de Respaldo Robocopy ---
+# --- FUNCION 8: Logica de Respaldo Robocopy (FUSION OPTIMIZADA) ---
 function Invoke-UserDataBackup {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory=$true)]
-        [ValidateSet('Copy', 'Mirror')]
+        [ValidateSet('Copy', 'Mirror', 'Move')] # Agregado 'Move'
         [string]$Mode,
 
         [string[]]$CustomSourcePath
@@ -2081,34 +2084,66 @@ function Invoke-UserDataBackup {
     } else {
         $backupType = 'Folders'
         
-        # --- LOGICA AVANZADA PARA DETECTAR LA RUTA REAL DE 'DESCARGAS' ---
-        # Consultamos el registro 'User Shell Folders' para obtener la ruta real, 
-        # incluso si el usuario la ha movido a otro disco.
+        # --- LOGICA DE PROFILEGUARD: DETECCION REAL POR REGISTRO (Mas segura) ---
         $regPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
-        $downloadsGuid = "{374DE290-123F-4565-9164-39C4925E467B}" # GUID oficial de Descargas
         
-        $downloadsPath = try {
-            $regValue = (Get-ItemProperty -Path $regPath -Name $downloadsGuid -ErrorAction SilentlyContinue).$downloadsGuid
-            if ($regValue) {
-                # Expandimos variables de entorno (ej: %USERPROFILE%\Downloads -> C:\Users\Juan\Downloads)
-                [System.Environment]::ExpandEnvironmentVariables($regValue)
-            } else {
-                # Fallback por defecto si no existe la clave
-                Join-Path -Path $env:USERPROFILE -ChildPath "Downloads"
-            }
-        } catch {
-            Join-Path -Path $env:USERPROFILE -ChildPath "Downloads"
+        # Helper para leer registro de forma segura
+        function Get-UserFolder { param($Name, $Guid, $Default) 
+            try {
+                $val = (Get-ItemProperty -Path $regPath -Name $Guid -ErrorAction SilentlyContinue).$Guid
+                if (-not $val) { $val = (Get-ItemProperty -Path $regPath -Name $Name -ErrorAction SilentlyContinue).$Name }
+                if ($val) { return [System.Environment]::ExpandEnvironmentVariables($val) }
+                return [System.Environment]::GetFolderPath($Default)
+            } catch { return [System.Environment]::GetFolderPath($Default) }
         }
 
-        # Construimos la lista de rutas estandar + descargas inteligente
-        $sourcePaths = @(
-            [System.Environment]::GetFolderPath('Desktop'),
-            [System.Environment]::GetFolderPath('MyDocuments'),
-            [System.Environment]::GetFolderPath('MyPictures'),
-            [System.Environment]::GetFolderPath('MyMusic'),
-            [System.Environment]::GetFolderPath('MyVideos'),
-            $downloadsPath
-        ) | Where-Object { Test-Path $_ } | Select-Object -Unique
+        # --- MENU DE SELECCION (Mejor experiencia de usuario) ---
+        $candidates = @(
+            [PSCustomObject]@{ Id=1; Name="Escritorio"; Path=(Get-UserFolder -Name 'Desktop' -Default 'Desktop'); Selected=$true },
+            [PSCustomObject]@{ Id=2; Name="Documentos"; Path=(Get-UserFolder -Name 'Personal' -Default 'MyDocuments'); Selected=$true },
+            [PSCustomObject]@{ Id=3; Name="Imagenes";   Path=(Get-UserFolder -Name 'My Pictures' -Default 'MyPictures'); Selected=$true },
+            [PSCustomObject]@{ Id=4; Name="Musica";     Path=(Get-UserFolder -Name 'My Music' -Default 'MyMusic'); Selected=$true },
+            [PSCustomObject]@{ Id=5; Name="Videos";     Path=(Get-UserFolder -Name 'My Video' -Default 'MyVideos'); Selected=$true },
+            [PSCustomObject]@{ Id=6; Name="Descargas";  Path=(Get-UserFolder -Guid '{374DE290-123F-4565-9164-39C4925E467B}' -Default 'UserProfile') + "\Downloads"; Selected=$true }
+        )
+
+        $selectionDone = $false
+        do {
+            Clear-Host
+            Write-Host "==========================================" -ForegroundColor Cyan
+            Write-Host "   SELECCION DE CARPETAS A RESPALDAR      " -ForegroundColor Cyan
+            Write-Host "==========================================" -ForegroundColor Cyan
+            Write-Host " Marca o desmarca las carpetas usando su numero."
+            Write-Host ""
+
+            foreach ($item in $candidates) {
+                if ($item.Selected) { Write-Host "   [$($item.Id)] [X] $($item.Name)" -ForegroundColor Green }
+                else { Write-Host "   [$($item.Id)] [ ] $($item.Name)" -ForegroundColor Gray }
+            }
+            Write-Host ""
+            Write-Host "   [C] CONTINUAR con la seleccion actual" -ForegroundColor Yellow
+            Write-Host "   [X] CANCELAR operacion" -ForegroundColor Red
+            Write-Host ""
+            
+            $inputKey = Read-Host " Elige una opcion"
+            
+            if ($inputKey.ToUpper() -eq 'C') { $selectionDone = $true }
+            elseif ($inputKey.ToUpper() -eq 'X') { Write-Host "Cancelado."; Start-Sleep -Seconds 1; return }
+            else {
+                if ($inputKey -match '^\d+$') {
+                    $id = [int]$inputKey
+                    $target = $candidates | Where-Object { $_.Id -eq $id }
+                    if ($target) { $target.Selected = -not $target.Selected }
+                }
+            }
+        } until ($selectionDone)
+
+        $sourcePaths = $candidates | Where-Object { $_.Selected -eq $true -and (Test-Path $_.Path) } | Select-Object -ExpandProperty Path
+
+        if ($sourcePaths.Count -eq 0) {
+            Write-Warning "No seleccionaste ninguna carpeta. Volviendo..."
+            Start-Sleep -Seconds 2; return
+        }
     }
     
     # 2. Solicitamos y validamos el destino
@@ -2119,34 +2154,35 @@ function Invoke-UserDataBackup {
         Write-Warning "No se selecciono una carpeta de destino. Operacion cancelada." ; Start-Sleep -Seconds 2; return
     }
 
-    # --- VALIDACION ANTI-BUCLE (CRITICO) ---
+    # --- VALIDACIONES DE SEGURIDAD (CRITICO PARA EVITAR BUCLES) ---
     $destFull = (Get-Item -Path $destinationPath).FullName.TrimEnd('\')
     foreach ($src in $sourcePaths) {
         if ($backupType -eq 'Folders') {
             $srcFull = (Get-Item -Path $src).FullName.TrimEnd('\')
-            # Si el destino empieza con la ruta de origen, es una subcarpeta (Riesgo de bucle)
             if ($destFull.StartsWith($srcFull, [System.StringComparison]::OrdinalIgnoreCase)) {
-                Write-Error "ERROR CRITICO DE CONFIGURACION:"
-                Write-Error "La carpeta de destino ($destFull) esta DENTRO de la carpeta de origen ($srcFull)."
-                Write-Error "Esto causaria un bucle infinito que llenaria tu disco duro."
-                Read-Host "Operacion abortada por seguridad. Presiona Enter..."
-                return
+                Write-Error "ERROR CRITICO: La carpeta de destino esta DENTRO de la carpeta de origen."
+                Write-Error "Esto causaria un bucle infinito que llenaria el disco."
+                Read-Host "Operacion abortada por seguridad. Presiona Enter..."; return
             }
         }
     }
 
-    # Validacion de unidad identica (Aviso de seguridad)
-    $sourceDriveLetter = (Get-Item -Path $sourcePaths[0]).PSDrive.Name
-    $destinationDriveLetter = (Get-Item -Path $destinationPath).PSDrive.Name
-    if ($sourceDriveLetter.ToUpper() -eq $destinationDriveLetter.ToUpper()) {
-        Write-Warning "AVISO: El destino esta en la misma unidad fisica que el origen."
-        Write-Warning "Esto protege contra borrados accidentales, pero NO contra fallos fisicos del disco."
-        if ((Read-Host "Estas seguro de que deseas continuar? (S/N)").ToUpper() -ne 'S') {
-            return
+    # Validacion de Unidad Identica (Advertencia de Seguridad)
+    try {
+        # Usamos Split-Path -Qualifier para obtener "C:" o "D:" de forma segura
+        $srcDrive = Split-Path $sourcePaths[0] -Qualifier -ErrorAction SilentlyContinue
+        $destDrive = Split-Path $destinationPath -Qualifier -ErrorAction SilentlyContinue
+        
+        if ($srcDrive -and $destDrive -and ($srcDrive -eq $destDrive)) {
+            Write-Warning "`n[AVISO DE SEGURIDAD]"
+            Write-Warning "El origen y el destino estan en la MISMA unidad fisica ($srcDrive)."
+            Write-Warning "Esto protege contra borrado accidental, pero NO contra fallo del disco duro."
+            if ((Read-Host "¿Estas seguro de que deseas continuar? (S/N)").ToUpper() -ne 'S') { return }
         }
-    }
-    
-    # 3. Calculamos espacio requerido
+    } catch {}
+
+    # 3. Calculo de espacio
+	Clear-Host
     Write-Host "`n[+] Calculando espacio requerido..." -ForegroundColor Yellow
     $sourceTotalSize = 0
     try {
@@ -2154,44 +2190,61 @@ function Invoke-UserDataBackup {
             $sourceTotalSize = ($sourcePaths | Get-Item | Measure-Object -Property Length -Sum).Sum
         } else {
             foreach ($folder in $sourcePaths) {
+                # Usamos ErrorAction SilentlyContinue para saltar archivos bloqueados durante el calculo
                 $sourceTotalSize += (Get-ChildItem -Path $folder -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
             }
         }
-    } catch { Write-Warning "Calculo de tamano aproximado (algunos archivos pueden estar bloqueados)." }
+    } catch { Write-Warning "Calculo aproximado (algunos archivos pueden estar bloqueados)." }
     
-    $destinationFreeSpace = (Get-Volume -DriveLetter $destinationDriveLetter).SizeRemaining
+    # Obtener espacio libre en destino
+    try {
+        $destDriveLetter = (Get-Item -Path $destinationPath).PSDrive.Name
+        $destinationFreeSpace = (Get-Volume -DriveLetter $destDriveLetter).SizeRemaining
+    } catch { 
+        # Fallback si no se puede leer el volumen (ej: rutas de red UNC)
+        $destinationFreeSpace = [long]::MaxValue 
+    }
+
     if ($sourceTotalSize -gt $destinationFreeSpace) {
         $neededGB = [math]::Round($sourceTotalSize / 1GB, 2)
         $freeGB = [math]::Round($destinationFreeSpace / 1GB, 2)
-        Write-Error "ESPACIO INSUFICIENTE: Requieres ~$neededGB GB pero solo tienes $freeGB GB libres."
-        Read-Host "Operacion abortada. Presiona Enter..."
-        return
+        Write-Host "ESPACIO INSUFICIENTE: Requieres ~$neededGB GB pero solo tienes $freeGB GB libres."
+        Read-Host "Operacion abortada. Presiona Enter..."; return
     }
 
-    # 4. Configuracion Robocopy (Optimizado)
+    # 4. Configuracion Robocopy (MEZCLA DE MOTORES)
     $logDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
     if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory | Out-Null }
     $logFile = Join-Path $logDir "Respaldo_Robocopy_$(Get-Date -Format 'yyyy-MM-dd_HH-mm').log"
 
-    # FLAGS DE ROBOCOPY:
-    # /B  : Modo Backup (copia archivos saltando permisos NTFS si eres Admin)
-    # /J  : Unbuffered I/O (Evita llenar la RAM con archivos grandes)
-    # /XD : Excluir directorios basura
-    $baseRoboCopyArgs = @("/COPY:DAT", "/R:2", "/W:3", "/XJ", "/NP", "/TEE", "/B", "/J")
+    # --- FLAGS PROFILEGUARD (OPTMIZADOS /J /B) ---
+    # /J = I/O sin bufer (Vital para archivos grandes/SSDs)
+    # /B = Modo Backup (Permite copiar archivos de sistema o de otros usuarios si eres Admin)
+	$baseRoboCopyArgs = @("/COPY:DAT", "/R:2", "/W:3", "/XJ", "/NP", "/TEE", "/B", "/J", "/MT:8")
     $excludeDirs = @("/XD", "`"$destinationPath`"", "System Volume Info", "`$RECYCLE.BIN", "AppData\Local\Temp")
 
-    # 5. Menu de Confirmacion
-    Clear-Host
-    $modeDescription = if ($Mode -eq 'Mirror') { "Sincronizacion (ESPEJO - Borra en destino lo que no esta en origen)" } else { "Respaldo Incremental (Solo copia nuevos/modificados)" }
+    # Ajuste de descripcion para incluir el modo Move
+    $modeDescription = switch ($Mode) {
+        'Mirror' { "Sincronizacion (ESPEJO - Borra archivos en destino que no esten en origen)" }
+        'Move'   { "Mover (CORTAR y PEGAR - Borra en origen tras copiar) [CUIDADO]" }
+        default  { "Respaldo Incremental (Solo copia nuevos/modificados)" }
+    }
+    
     Write-Host "--- RESUMEN DE RESPALDO ---" -ForegroundColor Cyan
     Write-Host "Modo: $modeDescription"
     Write-Host "Destino: $destinationPath"
     Write-Host "Origen(es):"
     $sourcePaths | ForEach-Object { Write-Host " - $_" }
     
+    if ($Mode -eq 'Move') {
+        Write-Host "`n[ADVERTENCIA EXTREMA] Se selecciono MOVER." -ForegroundColor Red
+        Write-Host "Los archivos se borraran del origen una vez copiados al destino."
+        Write-Host "Asegurate de que el destino sea correcto."
+    }
+
     Write-Host ""
-    Write-Host "   [S] Iniciar Respaldo (Sin verificacion)"
-    Write-Host "   [V] Iniciar + Verificacion Rapida (Robocopy /L)"
+    Write-Host "   [S] Iniciar Operacion"
+    Write-Host "   [V] Iniciar + Verificacion Rapida (/L)"
     Write-Host "   [H] Iniciar + Verificacion Profunda por Hash (LENTO pero Seguro)" -ForegroundColor Yellow
     Write-Host "   [N] Cancelar"
     $confirmChoice = Read-Host "`nElige una opcion"
@@ -2212,11 +2265,16 @@ function Invoke-UserDataBackup {
     if ($backupType -eq 'Files') {
         # Copia de Archivos Sueltos
         $filesByDirectory = $sourcePaths | Get-Item | Group-Object -Property DirectoryName
+        
+        # Logica MOVE para archivos (/MOV)
+        $currentFileArgs = $baseRoboCopyArgs
+        if ($Mode -eq 'Move') { $currentFileArgs += "/MOV" }
+
         foreach ($group in $filesByDirectory) {
             $sourceDir = $group.Name
             $fileNames = $group.Group | ForEach-Object { "`"$($_.Name)`"" }
-            # Nota: Exclusiones de directorios (/XD) no aplican bien al modo archivo, se omiten aqui
-            $currentArgs = @("`"$sourceDir`"", "`"$destinationPath`"") + $fileNames + $baseRoboCopyArgs + $logArg
+            # Nota: Exclusiones de directorios no aplican bien aqui
+            $currentArgs = @("`"$sourceDir`"", "`"$destinationPath`"") + $fileNames + $currentFileArgs + $logArg
             
             Write-Host "Procesando archivos desde: $sourceDir" -ForegroundColor Gray
             Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow
@@ -2224,7 +2282,18 @@ function Invoke-UserDataBackup {
     } else {
         # Copia de Carpetas Completas
         $folderArgs = $baseRoboCopyArgs
-        if ($Mode -eq 'Mirror') { $folderArgs += "/MIR" } else { $folderArgs += "/E" }
+        
+        # --- LOGICA DE MODOS FUSIONADA ---
+        if ($Mode -eq 'Mirror') { 
+            $folderArgs += "/MIR" 
+        } 
+        elseif ($Mode -eq 'Move') { 
+            $folderArgs += "/MOVE" # Mueve carpeta y contenido
+            $folderArgs += "/E"    # Asegura copiar subdirectorios vacios
+        } 
+        else { 
+            $folderArgs += "/E" 
+        }
         $folderArgs += $excludeDirs
 
         foreach ($sourceFolder in $sourcePaths) {
@@ -2234,30 +2303,26 @@ function Invoke-UserDataBackup {
             Write-Host "`n[ROBOCOPY] Procesando: $folderName" -ForegroundColor Cyan
             $currentArgs = @("`"$sourceFolder`"", "`"$destinationFolder`"") + $folderArgs + $logArg
             
-            # Usamos PassThru para capturar el codigo de salida
             $proc = Start-Process "robocopy.exe" -ArgumentList $currentArgs -Wait -NoNewWindow -PassThru
             
-            # Manejo de Codigos de Salida de Robocopy (0-7 es Exito, >=8 es Error)
             if ($proc.ExitCode -ge 8) {
-                Write-Error "Errores detectados en '$folderName' (Codigo: $($proc.ExitCode)). Revisa el log."
-                Write-Log -LogLevel ERROR -Message "BACKUP: Fallo en '$folderName'. Codigo Robocopy: $($proc.ExitCode)"
+                Write-Error "Errores detectados en '$folderName' (Codigo: $($proc.ExitCode))."
+                Write-Log -LogLevel ERROR -Message "BACKUP: Fallo en '$folderName'. Codigo: $($proc.ExitCode)"
             } elseif ($proc.ExitCode -ge 0) {
                 Write-Host "   -> Completado (Codigo: $($proc.ExitCode))." -ForegroundColor Green
             }
         }
     }
 
-    Write-Host "`n[FIN] Copia finalizada." -ForegroundColor Green
+    Write-Host "`n[FIN] Operacion finalizada." -ForegroundColor Green
     
-    # 7. Ejecucion de la Verificacion (Si se selecciono)
+    # 7. Ejecucion de la Verificacion (Utiliza funciones auxiliares existentes en ProfileGuard)
     switch ($verificationType) {
         'Fast' {
-            Write-Log -LogLevel INFO -Message "BACKUP: Iniciando verificacion rapida."
             Invoke-BackupRobocopyVerification -logFile $logFile -baseRoboCopyArgs $baseRoboCopyArgs -backupType $backupType -sourcePaths $sourcePaths -destinationPath $destinationPath -Mode $Mode
         }
         'Deep' {
-            Write-Log -LogLevel INFO -Message "BACKUP: Iniciando verificacion profunda (Hash SHA256)."
-            # Llama a la funcion auxiliar de Hash (debe estar definida en el script principal)
+            # Esta funcion ya existe en ProfileGuard y funciona correctamente
             Invoke-BackupHashVerification -sourcePaths $sourcePaths -destinationPath $destinationPath -backupType $backupType -logFile $logFile
         }
     }
@@ -2455,12 +2520,46 @@ Archivos faltantes en destino: $missingFiles
 # ===================================================================
 # --- MoDULO DE REUBICACIoN DE CARPETAS DE USUARIO ---
 # ===================================================================
-
 function Move-UserProfileFolders {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param()
 
     Write-Log -LogLevel INFO -Message "Usuario entro al Modulo de Reubicacion de Carpetas de Usuario."
+
+    # --- UTILIDAD PARA MANTENER LA CONSOLA VISIBLE (MEJORADO) ---
+    if (-not ([System.Management.Automation.PSTypeName]'Win32ConsoleUtils').Type) {
+        try {
+            Add-Type -TypeDefinition @"
+            using System;
+            using System.Runtime.InteropServices;
+            public class Win32ConsoleUtils {
+                [DllImport("kernel32.dll")]
+                public static extern IntPtr GetConsoleWindow();
+                
+                [DllImport("user32.dll")]
+                public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+                
+                [DllImport("user32.dll")]
+                public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+                [DllImport("user32.dll", SetLastError = true)]
+                public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+                // Constantes para SetWindowPos
+                public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+                public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
+                public const uint SWP_NOSIZE = 0x0001;
+                public const uint SWP_NOMOVE = 0x0002;
+                public const uint SWP_SHOWWINDOW = 0x0040;
+                
+                // Constante para ShowWindow
+                public const int SW_RESTORE = 9;
+            }
+"@ -ErrorAction Stop
+        } catch { 
+            # Ignorar si el tipo ya existe
+        }
+    }
 
     $folderMappings = @{
         'Escritorio' = @{ RegValue = 'Desktop'; DefaultName = 'Desktop' }
@@ -2472,9 +2571,9 @@ function Move-UserProfileFolders {
     }
     $registryPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
 
-    # PROPUESTA:
-    Write-Host "\n[+] Paso 1: Selecciona la NUEVA UBICACION BASE donde se moveran tus carpetas personales." -ForegroundColor Yellow
+    Write-Host "`n[+] Paso 1: Selecciona la carpeta RAIZ donde se crearan las nuevas carpetas de usuario." -ForegroundColor Yellow
     Write-Host "    (Ejemplo: Si seleccionas 'D:\MisDatos', se crearan 'D:\MisDatos\Escritorio', 'D:\MisDatos\Documentos', etc.)" -ForegroundColor Gray
+    
     $newBasePath = Select-PathDialog -DialogType Folder -Title "Selecciona la NUEVA UBICACION BASE para tus carpetas"
     
     if ([string]::IsNullOrWhiteSpace($newBasePath)) {
@@ -2499,6 +2598,7 @@ function Move-UserProfileFolders {
         }
     }
 
+    # --- MENU DE SELECCION ---
     $choice = ''
     while ($choice.ToUpper() -ne 'C' -and $choice.ToUpper() -ne 'V') {
         Clear-Host
@@ -2506,7 +2606,6 @@ function Move-UserProfileFolders {
         Write-Host "      Selecciona las Carpetas de Usuario a Reubicar    " -ForegroundColor Cyan
         Write-Host "=======================================================" -ForegroundColor Cyan
         Write-Host "Nueva Ubicacion Base: $newBasePath" -ForegroundColor Yellow
-        Write-Host "Marca las carpetas que deseas mover a esta nueva ubicacion."
         Write-Host ""
         
         for ($i = 0; $i -lt $folderItems.Count; $i++) {
@@ -2554,235 +2653,231 @@ function Move-UserProfileFolders {
         return
     }
 
+    # --- CALCULO DE ESPACIO AUTOMATICO ---
     Clear-Host
-    Write-Host "--- RESUMEN DE LA REUBICACION ---" -ForegroundColor Cyan
-    Write-Host "Nueva Ubicacion Base: $newBasePath"
-    Write-Host "Se modificaran las siguientes carpetas:" -ForegroundColor Yellow
-    
-    $operations = @()
+	Write-Host "`n[+] Calculando espacio necesario..." -ForegroundColor Yellow
+    $totalRequiredBytes = 0
     foreach ($folder in $foldersToProcess) {
-        $regValueName = $folderMappings[$folder.Name].RegValue
-        $currentPathReg = (Get-ItemProperty -Path $registryPath -Name $regValueName -ErrorAction SilentlyContinue).($regValueName)
-        $currentPathExpanded = try { [Environment]::ExpandEnvironmentVariables($currentPathReg) } catch { $currentPathReg }
-        $newFolderName = $folderMappings[$folder.Name].DefaultName
-        $newFullPath = Join-Path -Path $newBasePath -ChildPath $newFolderName
+        $regVal = $folderMappings[$folder.Name].RegValue
+        $pathRaw = (Get-ItemProperty -Path $registryPath -Name $regVal -ErrorAction SilentlyContinue).($regVal)
+        $pathExpanded = try { [Environment]::ExpandEnvironmentVariables($pathRaw) } catch { $pathRaw }
+        try {
+            $size = (Get-ChildItem -Path $pathExpanded -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+            $totalRequiredBytes += $size
+        } catch {}
+    }
 
-        Write-Host " - $($folder.Name)"
-        Write-Host "     Ruta Actual Registrada: $currentPathExpanded" -ForegroundColor Gray
-        Write-Host "     NUEVA Ruta a Registrar: $newFullPath" -ForegroundColor Green
+    try {
+        $destDrive = Split-Path $newBasePath -Qualifier
+        $volumeInfo = Get-Volume | Where-Object { ($_.DriveLetter + ":") -eq $destDrive }
+        $freeSpaceBytes = $volumeInfo.SizeRemaining
+    } catch { $freeSpaceBytes = [long]::MaxValue }
+
+    $reqGB = [math]::Round($totalRequiredBytes / 1GB, 2)
+    $freeGB = [math]::Round($freeSpaceBytes / 1GB, 2)
+
+    if ($totalRequiredBytes -gt $freeSpaceBytes) {
+        Write-Host "`n[ERROR CRITICO] ESPACIO INSUFICIENTE EN DESTINO" -ForegroundColor Red
+        Write-Host "Se requieren: ~$reqGB GB | Disponibles: ~$freeGB GB" -ForegroundColor White
+        Read-Host "Operacion abortada. Presiona Enter..."
+        return
+    } else {
+        Write-Host "`n[OK] Espacio suficiente verificado." -ForegroundColor Green
+        Write-Host "Requerido: $reqGB GB | Disponible: $freeGB GB" -ForegroundColor Gray
+    }
+
+    # --- MENU DE ACCION ---
+	Write-Host "`n--- TIPO DE ACCION ---" -ForegroundColor Cyan
+    Write-Host "   [1] Mover Archivos Y Actualizar Registro (Recomendado)"
+    Write-Host "   [2] Solo Actualizar Registro (Si ya moviste archivos manualmente)"
+    
+    $actionInput = Read-Host "`nElige opcion (1/2)"
+    if ($actionInput -ne '1' -and $actionInput -ne '2') { return }
+    $actionType = if ($actionInput -eq '1') { 'MoveAndRegister' } else { 'RegisterOnly' }
+
+    $verificationMode = 'None'
+    if ($actionType -eq 'MoveAndRegister') {
+        Write-Host "`n--- NIVEL DE VERIFICACION ---" -ForegroundColor Yellow
+        Write-Host "   [N] Ninguna (Mover directo - Mas rapido)"
+        Write-Host "   [S] Simulacion (/L) - Ver que pasara antes de mover"
+        Write-Host "   [H] Verificacion Hash (LENTO - Copia -> Verifica -> Borra origen)"
         
-        $operations += [PSCustomObject]@{
-            Name = $folder.Name
-            RegValueName = $regValueName
-            CurrentPath = $currentPathExpanded
-            NewPath = $newFullPath
+        $verifyInput = Read-Host "`nElige opcion"
+        switch ($verifyInput.ToUpper()) {
+            'S' { $verificationMode = 'Simulation' }
+            'H' { $verificationMode = 'Hash' }
+            default { $verificationMode = 'None' }
         }
     }
 
-    # --- BLOQUE DE ADVERTENCIA DE SEGURIDAD MEJORADO ---
-    Write-Warning "`nDE SEGURIDAD CRITICA - LEER ANTES DE CONTINUAR"
-    Write-Host "---------------------------------------------------------------------" -ForegroundColor Red
-    Write-Host "1. ARCHIVOS EN USO:" -ForegroundColor Yellow
-    Write-Host "   Si tienes archivos abiertos (Word, Excel, Navegadores, Fotos, etc.)"
-    Write-Host "   en las carpetas que vas a mover, la operacion FALLARA o quedara a medias."
-    Write-Host "   --> CIERRA TODO AHORA MISMO <--" -ForegroundColor Red
-    
-    Write-Host "`n2. TIEMPO DE OPERACION:" -ForegroundColor Yellow
-    Write-Host "   Si eliges 'Mover y Registrar', esto puede tardar mucho dependiendo"
-    Write-Host "   de la cantidad de datos. NO cierres la ventana negra."
-    
-    Write-Host "`n3. RIESGO:" -ForegroundColor Yellow
-    Write-Host "   Interrumpir este proceso puede dejar tu perfil de usuario inestable."
-    Write-Host "---------------------------------------------------------------------" -ForegroundColor Red
-
-    # --- Comprobacion proactiva (Opcional pero recomendada) ---
-    $openFilesWarning = $false
-    $commonProcesses = @("WINWORD", "EXCEL", "POWERPNT", "ACROBAT", "CHROME", "MSEDGE", "FIREFOX", "PHOTOS")
-    $runningApps = Get-Process -Name $commonProcesses -ErrorAction SilentlyContinue
-    
-    if ($runningApps) {
-        Write-Host "`n[ALERTA] Se han detectado aplicaciones abiertas que podrian interferir:" -ForegroundColor Magenta
-        foreach ($app in $runningApps | Select-Object -Unique ProcessName) {
-            Write-Host "   - $($app.ProcessName)" -ForegroundColor Magenta
+    if ($verificationMode -eq 'Simulation') {
+        Write-Host "`n[SIMULACION] Ejecutando Robocopy /L para previsualizar..." -ForegroundColor Cyan
+        foreach ($folder in $foldersToProcess) {
+            $regName = $folderMappings[$folder.Name].RegValue
+            $currentPath = (Get-ItemProperty -Path $registryPath -Name $regName -ErrorAction SilentlyContinue).($regName)
+            $src = try { [Environment]::ExpandEnvironmentVariables($currentPath) } catch { $currentPath }
+            $dest = Join-Path $newBasePath $folderMappings[$folder.Name].DefaultName
+            
+            Start-Process "robocopy.exe" -ArgumentList "`"$src`" `"$dest`" /L /E /NP /NJH /NJS" -Wait -PassThru -NoNewWindow
         }
-        Write-Warning "Se recomienda cerrarlas manualmente antes de continuar."
+        Write-Host "`nSimulacion completada. Revisa la salida arriba." -ForegroundColor Yellow
+        if ((Read-Host "¿Deseas proceder con el movimiento REAL? (S/N)").ToUpper() -ne 'S') { return }
+        $verificationMode = 'None' 
     }
 
     Write-Host ""
-    Write-Host "--- TIPO DE ACCION ---" -ForegroundColor Yellow
-    Write-Host "   [M] Mover Archivos Y Actualizar Registro (Accion Completa, Lenta)"
-    Write-Host "   [R] Solo Actualizar Registro (Rapido - ¡Solo si YA moviste los archivos!)" -ForegroundColor Red
-    Write-Host "   [N] Cancelar"
+	Write-Warning "Cerrando aplicaciones y explorador..."
+    $confirmation = Read-Host "¿Confirmar inicio? (SI/NO)"
+    if ($confirmation -ne 'SI') { return }
+
+    # --- [SEGURIDAD] CERRAR EXPLORER Y FORZAR VISIBILIDAD ---
+    Write-Host "Cerrando el Explorador de Windows..." -ForegroundColor Yellow
+    Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
     
-    $actionChoice = Read-Host "`nElige el tipo de accion a realizar"
-    $actionType = ''
-
-    switch ($actionChoice.ToUpper()) {
-        'M' { $actionType = 'MoveAndRegister' }
-        'R' { $actionType = 'RegisterOnly' }
-        default {
-            Write-Host "Operacion cancelada por el usuario." -ForegroundColor Yellow
-            Start-Sleep -Seconds 2
-            return
+    # Esperamos un momento para que el sistema reaccione al cierre
+    Start-Sleep -Seconds 1
+    
+    # --- [FIX CRÍTICO] FORZAR LA CONSOLA AL FRENTE (TOPMOST) ---
+    try {
+        $hWnd = [Win32ConsoleUtils]::GetConsoleWindow()
+        if ($hWnd -ne [IntPtr]::Zero) {
+            # 1. Asegurar que no esté minimizada
+            [Win32ConsoleUtils]::ShowWindow($hWnd, [Win32ConsoleUtils]::SW_RESTORE) 
+            
+            # 2. Forzar "Siempre visible" (TopMost) para que no se pierda tras el fondo
+            # HWND_TOPMOST (-1) coloca la ventana sobre todas las demás no-topmost
+            [Win32ConsoleUtils]::SetWindowPos($hWnd, [Win32ConsoleUtils]::HWND_TOPMOST, 0, 0, 0, 0, ([Win32ConsoleUtils]::SWP_NOMOVE -bor [Win32ConsoleUtils]::SWP_NOSIZE -bor [Win32ConsoleUtils]::SWP_SHOWWINDOW)) | Out-Null
+            
+            # 3. Dar foco
+            [Win32ConsoleUtils]::SetForegroundWindow($hWnd) | Out-Null
+            
         }
+    } catch {
     }
 
-    Write-Warning "`nConfirmacion Final:"
-    $confirmation = Read-Host "¿Estas COMPLETAMENTE SEGURO de continuar con la accion '$actionType'? (Escribe 'SI' para confirmar)"
-    if ($confirmation -ne 'SI') {
-        Write-Host "Operacion cancelada por el usuario." -ForegroundColor Yellow
-        Start-Sleep -Seconds 2
-        return
-    }
-
-    Write-Host "`n[+] Iniciando proceso. NO CIERRES ESTA VENTANA..." -ForegroundColor Yellow
-    Write-Log -LogLevel INFO -Message "REUBICACION: Iniciando proceso con accion '$actionType' para $($operations.Count) carpetas hacia '$newBasePath'."
     $globalSuccess = $true
-    $explorerRestartNeeded = $false
-
-    foreach ($op in $operations) {
-        Write-Host "`n--- Procesando Carpeta: $($op.Name) ---" -ForegroundColor Cyan
+    
+    foreach ($op in $foldersToProcess) {
+        $regName = $folderMappings[$op.Name].RegValue
+        $rawPath = (Get-ItemProperty -Path $registryPath -Name $regName -ErrorAction SilentlyContinue).($regName)
+        $srcPath = [Environment]::ExpandEnvironmentVariables($rawPath)
         
-        # 1. Crear directorio de destino (Siempre necesario)
-        Write-Host "  [1/3] Asegurando directorio de destino '$($op.NewPath)'..." -ForegroundColor Gray
-        $destinationDirCreated = $false
-        try {
-            if (-not (Test-Path $op.NewPath)) {
-                New-Item -Path $op.NewPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
-                 Write-Host "  -> Directorio creado." -ForegroundColor Green
-            } else {
-                 Write-Host "  -> Directorio ya existe." -ForegroundColor Gray
-            }
-            $destinationDirCreated = $true
-        } catch {
-            Write-Error "  -> FALLO al crear el directorio de destino. Omitiendo carpeta '$($op.Name)'. Error: $($_.Exception.Message)"
-            Write-Log -LogLevel ERROR -Message "REUBICACION: Fallo al crear directorio '$($op.NewPath)'. Carpeta '$($op.Name)' omitida. Error: $($_.Exception.Message)"
-            $globalSuccess = $false
+        # Validación de existencia de origen
+        if (-not (Test-Path $srcPath)) {
+            Write-Warning "   [OMITIDO] La carpeta de origen no existe en disco: $srcPath"
             continue
         }
 
-        # 2. Mover contenido (Solo si se eligio la accion completa)
-        $robocopySucceeded = $true # Asumimos exito si no se mueve nada
+        $destPath = Join-Path $newBasePath $folderMappings[$op.Name].DefaultName
+
+        Write-Host "`nProcesando: $($op.Name)..." -ForegroundColor Cyan
+
+        # 1. Crear Directorio
+        if (-not (Test-Path $destPath)) { New-Item -Path $destPath -ItemType Directory -Force | Out-Null }
+
+        # 2. Mover/Copiar
+        $filesMoved = $true
         if ($actionType -eq 'MoveAndRegister') {
-            Write-Host "  [2/3] Moviendo contenido desde '$($op.CurrentPath)'..." -ForegroundColor Gray
-            Write-Warning "      (Esto puede tardar. Se abrira una ventana de Robocopy por cada carpeta)"
-            
-            $robocopyLogDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
-            $robocopyLogFile = Join-Path $robocopyLogDir "Robocopy_Move_$($op.Name)_$(Get-Date -Format 'yyyyMMddHHmmss').log"
-            $robocopyArgs = @(
-                "`"$($op.CurrentPath)`"" # Origen
-                "`"$($op.NewPath)`""    # Destino
-                "/MOVE"                 # Mueve archivos Y directorios (los elimina del origen)
-                "/E"                    # Copia subdirectorios, incluidos los vacios
-                "/COPY:DAT"             # Copia Datos, Atributos, Timestamps
-                "/DCOPY:T"              # Copia Timestamps de directorios
-                "/R:2"                  # Numero de reintentos en caso de fallo
-                "/W:5"                  # Tiempo de espera entre reintentos
-                "/MT:8"                 # Usa 8 hilos para copiar (puede acelerar en discos rapidos)
-                "/NJH"                  # No Job Header
-                "/NJS"                  # No Job Summary
-                "/NP"                   # No Progress
-                "/TEE"                  # Muestra en consola Y en log
-                "/LOG:`"$robocopyLogFile`"" # Guarda el log detallado
-            )
-            
-            Write-Log -LogLevel ACTION -Message "REUBICACION: Iniciando Robocopy /MOVE para '$($op.Name)' de '$($op.CurrentPath)' a '$($op.NewPath)'."
-            
-            $processInfo = Start-Process "robocopy.exe" -ArgumentList $robocopyArgs -Wait -PassThru -WindowStyle Minimized
-            
-            if ($processInfo.ExitCode -ge 8) {
-                Write-Error "  -> FALLO Robocopy al mover '$($op.Name)' (Codigo de salida: $($processInfo.ExitCode))."
-                Write-Error "     Los archivos pueden estar parcialmente movidos. Revisa el log: $robocopyLogFile"
-                Write-Log -LogLevel ERROR -Message "REUBICACION: Robocopy fallo para '$($op.Name)' (Codigo: $($processInfo.ExitCode)). Log: $robocopyLogFile"
-                $globalSuccess = $false
-                $robocopySucceeded = $false 
-                # NO continuamos con el cambio de registro si el movimiento fallo
-                continue 
-            } else {
-                 Write-Host "  -> Movimiento completado (Codigo Robocopy: $($processInfo.ExitCode))." -ForegroundColor Green
-                 Write-Log -LogLevel ACTION -Message "REUBICACION: Robocopy completado para '$($op.Name)' (Codigo: $($processInfo.ExitCode)). Log: $robocopyLogFile"
-            }
-        } else { # Si $actionType es 'RegisterOnly'
-             Write-Host "  [2/3] Omitiendo movimiento masivo de archivos." -ForegroundColor Gray
-             
-             # --- MEJORA: COPIAR Y CONFIGURAR DESKTOP.INI ---
-             Write-Host "      - Verificando y copiando 'desktop.ini' para mantener los iconos..." -ForegroundColor Gray
-             
-             $srcIni = Join-Path $op.CurrentPath "desktop.ini"
-             $destIni = Join-Path $op.NewPath "desktop.ini"
+            $logDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
+            if (-not (Test-Path $logDir)) { New-Item -Path $logDir -ItemType Directory -Force | Out-Null }
+            $logFile = Join-Path $logDir "Move_$($op.Name).log"
 
-             try {
-                 if (Test-Path $srcIni -PathType Leaf) {
-                     # Copiamos el archivo forzando la sobrescritura si existe
-                     Copy-Item -Path $srcIni -Destination $destIni -Force -ErrorAction Stop
-                     
-                     # Aplicamos atributos de Oculto y Sistema al archivo (necesario para que Windows lo respete)
-                     $fileItem = Get-Item $destIni -Force
-                     $fileItem.Attributes = 'Hidden', 'System'
-                     
-                     # TRUCO CRITICO DE WINDOWS:
-                     # Para que Windows lea el desktop.ini, la CARPETA contenedora debe ser 'ReadOnly' o 'System'.
-                     # Esto no impide escribir en ella, es solo una bandera para el Explorador.
-                     $folderItem = Get-Item $op.NewPath -Force
-                     $folderItem.Attributes = 'ReadOnly'
-                     
-                     Write-Host "      [OK] Icono y nombre personalizado (desktop.ini) restaurados." -ForegroundColor Green
-                 } else {
-                     Write-Host "      [INFO] No se encontro 'desktop.ini' en el origen. La carpeta tendra icono generico." -ForegroundColor Gray
-                 }
-             } catch {
-                 Write-Warning "      [AVISO] No se pudo copiar o configurar desktop.ini: $($_.Exception.Message)"
-             }
-        }
-
-        # 3. Actualizar el Registro (Si la creacion del dir fue exitosa Y (Robocopy fue exitoso O se eligio 'Solo Registrar'))
-        if ($destinationDirCreated -and $robocopySucceeded) {
-            Write-Host "  [3/3] Actualizando la ruta en el Registro..." -ForegroundColor Gray
-            try {
-                Set-ItemProperty -Path $registryPath -Name $op.RegValueName -Value $op.NewPath -Type ExpandString -Force -ErrorAction Stop
-                Write-Host "  -> Registro actualizado exitosamente." -ForegroundColor Green
-                Write-Log -LogLevel ACTION -Message "REUBICACION: Registro actualizado para '$($op.Name)' a '$($op.NewPath)'."
-                $explorerRestartNeeded = $true
-            } catch {
-                Write-Error "  -> FALLO CRITICO al actualizar el registro para '$($op.Name)'. Error: $($_.Exception.Message)"
-                # Distinguir el mensaje de error segun la accion
-                if ($actionType -eq 'MoveAndRegister') {
-                    Write-Error "     La carpeta se movio, pero Windows aun apunta a la ubicacion antigua."
-                } else {
-                    Write-Error "     Windows no pudo ser actualizado para apuntar a la nueva ubicacion."
+            if ($verificationMode -eq 'Hash') {
+                # MODO SEGURO: Copiar -> Verificar -> Borrar
+                Write-Host "   [HASH] Copiando archivos (Modo Seguro)..." -ForegroundColor Yellow
+                $args = @("`"$srcPath`"", "`"$destPath`"", "/MOVE", "/E", "/COPY:DAT", "/DCOPY:T", "/MT:8", "/J", "/R:2", "/W:2", "/NP", "/LOG:`"$logFile`"")
+                Start-Process "robocopy.exe" -ArgumentList $args -Wait -WindowStyle Hidden
+                
+                # Verificar Hash Manualmente (adaptado para renombres)
+                Write-Host "   [HASH] Verificando integridad..." -ForegroundColor Yellow
+                $hashError = $false
+                
+                try {
+                    $sourceFiles = Get-ChildItem -Path $srcPath -Recurse -File -Force -ErrorAction SilentlyContinue
+                    $totalCheck = $sourceFiles.Count
+                    $currentCheck = 0
+                    
+                    foreach ($file in $sourceFiles) {
+                        $currentCheck++
+                        if ($currentCheck % 50 -eq 0) { Write-Progress -Activity "Verificando Hash" -Status "$currentCheck / $totalCheck" -PercentComplete (($currentCheck / $totalCheck) * 100) }
+                        
+                        $relativePath = $file.FullName.Substring($srcPath.Length)
+                        $targetFile = Join-Path $destPath $relativePath
+                        
+                        if (Test-Path $targetFile) {
+                            $h1 = (Get-FileHash $file.FullName -Algorithm SHA256).Hash
+                            $h2 = (Get-FileHash $targetFile -Algorithm SHA256).Hash
+                            if ($h1 -ne $h2) { $hashError = $true; Write-Warning "Hash incorrecto: $($file.Name)"; break }
+                        } else {
+                            $hashError = $true; Write-Warning "Falta en destino: $($file.Name)"; break
+                        }
+                    }
+                    Write-Progress -Activity "Verificando Hash" -Completed
+                } catch {
+                    $hashError = $true
+                    Write-Warning "Error leyendo archivos para hash."
                 }
-                Write-Log -LogLevel ERROR -Message "REUBICACION CRITICO: Fallo al actualizar registro para '$($op.Name)' a '$($op.NewPath)'. Error: $($_.Exception.Message)"
-                $globalSuccess = $false
+                
+                if (-not $hashError) {
+                    Write-Host "   [HASH] Integridad OK. Eliminando origen..." -ForegroundColor Green
+                    Remove-Item -Path "$srcPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+                } else {
+                    Write-Host "   [ALERTA] INTEGRIDAD FALLIDA. No se actualizara el registro." -ForegroundColor Red
+                    $filesMoved = $false
+                    $globalSuccess = $false
+                }
+            } else {
+                # MODO ESTANDAR: Mover directo (/MOVE)
+                Write-Host "   [MOVE] Moviendo archivos..." -ForegroundColor Gray
+				$args = @("`"$srcPath`"", "`"$destPath`"", "/MOVE", "/E", "/COPY:DAT", "/DCOPY:T", "/MT:8", "/J", "/R:2", "/W:2", "/NP", "/LOG:`"$logFile`"")
+                $p = Start-Process "robocopy.exe" -ArgumentList $args -Wait -PassThru -WindowStyle Hidden
+                if ($p.ExitCode -ge 8) { 
+                    Write-Error "   Error Robocopy (Cod $($p.ExitCode))."
+                    $filesMoved = $false
+                    $globalSuccess = $false
+                }
             }
         } else {
-             Write-Warning "  [3/3] Omitiendo actualizacion de registro debido a error previo en este paso."
+            # Solo registro: copiar desktop.ini
+            $ini = Join-Path $srcPath "desktop.ini"
+            if (Test-Path $ini) { Copy-Item $ini (Join-Path $destPath "desktop.ini") -Force -ErrorAction SilentlyContinue }
+        }
+
+        # 3. Registro
+        if ($filesMoved) {
+            try {
+                Set-ItemProperty -Path $registryPath -Name $regName -Value $destPath -Type ExpandString -Force
+                Write-Host "   Registro actualizado." -ForegroundColor Green
+                
+                # --- MAGIA DE ICONOS ---
+                $srcIni = Join-Path $srcPath "desktop.ini"
+                $destIni = Join-Path $destPath "desktop.ini"
+                if ((Test-Path $srcIni) -and (-not (Test-Path $destIni))) {
+                    Copy-Item $srcIni $destIni -Force -ErrorAction SilentlyContinue
+                }
+                
+                if (Test-Path $destIni) { (Get-Item $destIni -Force).Attributes = 'Hidden', 'System' }
+                # CRITICO: La carpeta contenedora debe ser ReadOnly
+                (Get-Item $destPath -Force).Attributes = 'ReadOnly'
+                
+                Write-Log -LogLevel ACTION -Message "Registro actualizado para $($op.Name) -> $destPath"
+            } catch {
+                Write-Error "   Error actualizando registro: $_"
+            }
         }
     }
 
-    Write-Host "`n--- PROCESO DE REUBICACION FINALIZADO ---" -ForegroundColor Cyan
-    if ($globalSuccess) {
-        Write-Host "[EXITO] Todas las carpetas seleccionadas se han procesado." -ForegroundColor Green
-        Write-Log -LogLevel INFO -Message "REUBICACION: Proceso finalizado con exito aparente para las carpetas seleccionadas (Accion: $actionType)."
-    } else {
-        Write-Error "[FALLO PARCIAL] Ocurrieron errores durante el proceso. Revisa los mensajes anteriores y los logs."
-        Write-Log -LogLevel ERROR -Message "REUBICACION: Proceso finalizado con uno o mas errores (Accion: $actionType)."
-    }
+    # --- [SEGURIDAD] RESTAURAR EXPLORER ---
+    Write-Host "`nRestaurando escritorio..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 1
+    Invoke-ExplorerRestart
 
-    if ($explorerRestartNeeded) {
-        Write-Host "\nEs necesario reiniciar el Explorador de Windows (o cerrar sesion y volver a iniciar) para que los cambios surtan efecto." -ForegroundColor Yellow
-        $restartChoice = Read-Host "¿Deseas reiniciar el Explorador ahora? (S/N)"
-        if ($restartChoice.ToUpper() -eq 'S') {
-            Invoke-ExplorerRestart
-        }
-    }
-
-    Read-Host "`nPresiona Enter para volver al menu..."
+    Read-Host "`nPresiona Enter para volver..."
 }
 
 # ===================================================================
 # --- MODULO DE RESPALDO DE DATOS ---
 # ===================================================================
-
 function Start-ProfileGuardMenu {
 
 	Invoke-FullRepoUpdater
