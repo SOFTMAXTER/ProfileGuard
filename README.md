@@ -141,3 +141,15 @@ Este software se proporciona "tal cual", sin garantía de ningún tipo, expresa 
 1.  **El autor no se hace responsable** de ninguna pérdida de datos, corrupción de archivos o daños al sistema derivados del uso de este script.
 2.  La función de **Reubicación de Carpetas** modifica el Registro de Windows. Se recomienda encarecidamente crear un **Punto de Restauración del Sistema** antes de utilizar dicha función y asegurar que se tiene una copia de seguridad de los datos.
 3.  Es responsabilidad del usuario verificar periódicamente que sus copias de seguridad sean restaurables y que el sistema de respaldo funcione según lo esperado.
+
+## 📝 Licencia y Modelo de Negocio (Dual Licensing)
+
+Este proyecto está protegido bajo derechos de autor y utiliza un modelo de **Doble Licencia (Dual Licensing)** para garantizar que siga siendo libre para la comunidad, ofreciendo al mismo tiempo un marco legal estructurado para integraciones corporativas.
+
+### 1. Licencia Comunitaria (Open Source)
+Distribuido bajo la **Licencia GNU GPLv3**. Eres libre de usar, estudiar, modificar y compartir este software de forma gratuita. Sin embargo, bajo esta licencia de naturaleza *Copyleft*, cualquier obra derivada, script o producto que integre código de ProfileGuard **debe ser publicado con su código fuente abierto** bajo esta misma licencia. El software se entrega "tal cual", sin garantías explícitas o implícitas.
+
+### 2. Licencia Comercial Exclusiva
+Si representas a una empresa o entidad que desea integrar el motor o la arquitectura de ProfileGuard en una herramienta comercial propietaria (cerrada), distribuirlo sin revelar su código fuente, o requiere un Acuerdo de Nivel de Servicio (SLA) y soporte técnico garantizado, **debes adquirir una Licencia Comercial**. 
+
+Para discutir regalías (royalties), adquisiciones o emitir una licencia comercial para tu corporación, por favor contacta a: `[softmaxter@hotmail.com]`
