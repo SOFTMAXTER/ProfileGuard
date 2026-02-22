@@ -16,7 +16,34 @@
     SOFTMAXTER
 
 .VERSION
-    1.1.10
+    1.1.11
+
+# ==============================================================================
+# Copyright (C) 2026 SOFTMAXTER
+#
+# DUAL LICENSING NOTICE:
+# This software is dual-licensed. By default, ProfileGuard is 
+# distributed under the GNU General Public License v3.0 (GPLv3).
+# 
+# 1. OPEN SOURCE (GPLv3):
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details: <https://www.gnu.org/licenses/>.
+#
+# 2. COMMERCIAL LICENSE:
+# If you wish to integrate this software into a proprietary/commercial product, 
+# distribute it without revealing your source code, or require commercial 
+# support, you must obtain a commercial license from the original author.
+#
+# Please contact softmaxter@hotmail.com for commercial licensing inquiries.
+# ==============================================================================
+
 #>
 
 [CmdletBinding()]
@@ -32,7 +59,7 @@ param(
     [string]$LogContext
 )
 
-$script:Version = "1.1.10"
+$script:Version = "1.1.11"
 
 function Write-Log {
     [CmdletBinding()]
@@ -112,7 +139,7 @@ function Invoke-FullRepoUpdater {
         Write-Log -LogLevel INFO -Message "UPDATER: Nueva version detectada. Local: v$($script:Version) | Remota: v$remoteVersionStr"
         
         Write-Host ""
-        $confirmation = Read-Host "¿Deseas descargar e instalar la actualizacion ahora? (S/N)"
+        $confirmation = Read-Host "Deseas descargar e instalar la actualizacion ahora? (S/N)"
         
         if ($confirmation.ToUpper() -eq 'S') {
             Write-Warning "`nEl actualizador se ejecutara en una nueva ventana."
@@ -308,7 +335,7 @@ function Invoke-BackupCreation {
     $compressionLevel = if ($compChoice -eq '2') { 'Max' } else { 'Fast' }
     
     # --- 4. Opcion de Cifrado ---
-    Write-Host "`n[4/5] ¿Deseas cifrar este respaldo con AES-256?" -ForegroundColor Yellow
+    Write-Host "`n[4/5] Deseas cifrar este respaldo con AES-256?" -ForegroundColor Yellow
     Write-Warning "Si pierdes la contrasena, NO PODRAS RECUPERAR tus archivos."
     $encryptChoice = Read-Host "(S/N)"
     
@@ -338,7 +365,7 @@ function Invoke-BackupCreation {
             Write-Warning "¡Copiala ahora! No la pierdas."
             
             # Preguntamos si quiere guardarla en archivo
-            $savePasswordToFileChoice = Read-Host "`n¿Deseas que el script guarde esta contrasena en un archivo .txt en el destino? (S/N)" # <--- CAMBIO AQUi: La pregunta
+            $savePasswordToFileChoice = Read-Host "`nDeseas que el script guarde esta contrasena en un archivo .txt en el destino? (S/N)" # <--- CAMBIO AQUi: La pregunta
             
             if ($savePasswordToFileChoice.ToUpper() -eq 'S') {
                  Write-Host "[INFO] Se intentara guardar la contrasena en un archivo al finalizar con exito." -ForegroundColor Gray
@@ -656,7 +683,7 @@ function Configure-AutoBackupSchedule {
     $compChoiceTask = Read-Host "Elige (1-2) [Por defecto: 1]"
     $compressionLevelTask = if ($compChoiceTask -eq '2') { 'Max' } else { 'Fast' }
 
-    Write-Host "`n[5/5] ¿Cifrar respaldo?" -ForegroundColor Yellow
+    Write-Host "`n[5/5] Cifrar respaldo?" -ForegroundColor Yellow
     $encryptChoice = Read-Host "(S/N)"
     $isEncrypted = $false
     $password = ""
@@ -1358,7 +1385,7 @@ function Manage-ExistingBackups {
                     Write-Warning "Todas las cadenas seleccionadas se restauraran y MEZCLARAN en la MISMA carpeta de destino."
                     Write-Warning "Esto podria causar que archivos con el mismo nombre se sobrescriban entre si."
                     Write-Host ""
-                    $confirmMulti = Read-Host "¿Estas seguro de que deseas continuar? (S/N)"
+                    $confirmMulti = Read-Host "Estas seguro de que deseas continuar? (S/N)"
                     if ($confirmMulti.ToUpper() -ne 'S') {
                         Write-Host "Operacion cancelada." -ForegroundColor Gray
                         Start-Sleep -Seconds 1
@@ -1372,7 +1399,7 @@ function Manage-ExistingBackups {
                 $selectedBackups = $allBackups | Where-Object { $_.Selected }
                 if ($selectedBackups.Count -eq 0) { Write-Warning "No has seleccionado ningun respaldo para eliminar." ; Start-Sleep -Seconds 2; continue }
                 Write-Warning "Eliminar un respaldo COMPLETO o INCREMENTAL puede romper la cadena de restauracion."
-                $confirm = Read-Host "¿Estas seguro de eliminar los $($selectedBackups.Count) archivos Y sus entradas del manifiesto? (S/N)"
+                $confirm = Read-Host "Estas seguro de eliminar los $($selectedBackups.Count) archivos Y sus entradas del manifiesto? (S/N)"
                 if ($confirm.ToUpper() -eq 'S') {
                     try {
                         foreach ($backup in $selectedBackups) {
@@ -1772,7 +1799,7 @@ function Invoke-RestoreBackupChain {
 }
 
 # ===================================================================
-# --- FUNCIONES AUXILIARES DE RESPALDO (NUEVAS Y MODIFICADAS) ---
+# --- FUNCIONES AUXILIARES DE RESPALDO ---
 # ===================================================================
 
 # --- Gestor del Manifiesto ---
@@ -1876,7 +1903,7 @@ function Ensure-7ZipIsInstalled {
 
     # Usar el motor de software existente para instalarlo
     if (Test-SoftwareEngine -Engine 'Winget') {
-        $installChoice = Read-Host "`n¿Deseas instalar 7-Zip (ID: 7zip.7zip) usando Winget ahora? (S/N)"
+        $installChoice = Read-Host "`nDeseas instalar 7-Zip (ID: 7zip.7zip) usando Winget ahora? (S/N)"
         if ($installChoice.ToUpper() -eq 'S') {
             Write-Host "`n[+] Instalando 7-Zip via Winget..." -ForegroundColor Yellow
             try {
@@ -2177,7 +2204,7 @@ function Invoke-UserDataBackup {
             Write-Warning "`n[AVISO DE SEGURIDAD]"
             Write-Warning "El origen y el destino estan en la MISMA unidad fisica ($srcDrive)."
             Write-Warning "Esto protege contra borrado accidental, pero NO contra fallo del disco duro."
-            if ((Read-Host "¿Estas seguro de que deseas continuar? (S/N)").ToUpper() -ne 'S') { return }
+            if ((Read-Host "Estas seguro de que deseas continuar? (S/N)").ToUpper() -ne 'S') { return }
         }
     } catch {}
 
@@ -2526,7 +2553,7 @@ function Move-UserProfileFolders {
 
     Write-Log -LogLevel INFO -Message "Usuario entro al Modulo de Reubicacion de Carpetas de Usuario."
 
-    # --- UTILIDAD PARA MANTENER LA CONSOLA VISIBLE (MEJORADO) ---
+    # --- UTILIDAD PARA MANTENER LA CONSOLA VISIBLE ---
     if (-not ([System.Management.Automation.PSTypeName]'Win32ConsoleUtils').Type) {
         try {
             Add-Type -TypeDefinition @"
@@ -2545,20 +2572,14 @@ function Move-UserProfileFolders {
                 [DllImport("user32.dll", SetLastError = true)]
                 public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
-                // Constantes para SetWindowPos
                 public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
-                public static readonly IntPtr HWND_NOTOPMOST = new IntPtr(-2);
                 public const uint SWP_NOSIZE = 0x0001;
                 public const uint SWP_NOMOVE = 0x0002;
                 public const uint SWP_SHOWWINDOW = 0x0040;
-                
-                // Constante para ShowWindow
                 public const int SW_RESTORE = 9;
             }
 "@ -ErrorAction Stop
-        } catch { 
-            # Ignorar si el tipo ya existe
-        }
+        } catch {}
     }
 
     $folderMappings = @{
@@ -2572,7 +2593,7 @@ function Move-UserProfileFolders {
     $registryPath = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
 
     Write-Host "`n[+] Paso 1: Selecciona la carpeta RAIZ donde se crearan las nuevas carpetas de usuario." -ForegroundColor Yellow
-    Write-Host "    (Ejemplo: Si seleccionas 'D:\MisDatos', se crearan 'D:\MisDatos\Escritorio', 'D:\MisDatos\Documentos', etc.)" -ForegroundColor Gray
+    Write-Host "    (Ejemplo: Si seleccionas 'D:\MisDatos', se crearan 'D:\MisDatos\Escritorio', etc.)" -ForegroundColor Gray
     
     $newBasePath = Select-PathDialog -DialogType Folder -Title "Selecciona la NUEVA UBICACION BASE para tus carpetas"
     
@@ -2589,12 +2610,25 @@ function Move-UserProfileFolders {
          return
     }
 
+    # --- NUEVO: ANALISIS INTELIGENTE DE RUTAS Y ONEDRIVE ---
     $selectableFolders = $folderMappings.Keys | Sort-Object
     $folderItems = @()
+    $hasOneDriveLocks = $false
+
     foreach ($folderName in $selectableFolders) {
+        $regName = $folderMappings[$folderName].RegValue
+        $currentPathRaw = (Get-ItemProperty -Path $registryPath -Name $regName -ErrorAction SilentlyContinue).($regName)
+        $currentPathExpanded = try { [Environment]::ExpandEnvironmentVariables($currentPathRaw) } catch { $currentPathRaw }
+        
+        # Deteccion de seguridad: Comprobar si OneDrive controla la carpeta
+        $isOneDriveLocked = [bool]($currentPathExpanded -match "\\OneDrive")
+        if ($isOneDriveLocked) { $hasOneDriveLocks = $true }
+
         $folderItems += [PSCustomObject]@{
             Name     = $folderName
             Selected = $false
+            Path     = $currentPathExpanded
+            IsLocked = $isOneDriveLocked
         }
     }
 
@@ -2610,20 +2644,32 @@ function Move-UserProfileFolders {
         
         for ($i = 0; $i -lt $folderItems.Count; $i++) {
             $item = $folderItems[$i]
-            $status = if ($item.Selected) { "[X]" } else { "[ ]" }
-            $currentPath = (Get-ItemProperty -Path $registryPath -Name $folderMappings[$item.Name].RegValue -ErrorAction SilentlyContinue).($folderMappings[$item.Name].RegValue)
-            $currentPathExpanded = try { [Environment]::ExpandEnvironmentVariables($currentPath) } catch { $currentPath }
-            Write-Host ("   [{0}] {1} {2,-12} -> Actual: {3}" -f ($i + 1), $status, $item.Name, $currentPathExpanded)
+            
+            if ($item.IsLocked) {
+                # Diseño de advertencia visual para elementos bloqueados
+                Write-Host ("   [{0}] [!] {1,-12} -> BLOQUEADO POR ONEDRIVE" -f ($i + 1), $item.Name) -ForegroundColor Red
+            } else {
+                $status = if ($item.Selected) { "[X]" } else { "[ ]" }
+                Write-Host ("   [{0}] {1} {2,-12} -> Actual: {3}" -f ($i + 1), $status, $item.Name, $item.Path) -ForegroundColor White
+            }
         }
         
         $selectedCount = $folderItems.Where({$_.Selected}).Count
         if ($selectedCount -gt 0) {
-            Write-Host ""
-            Write-Host "   ($selectedCount carpeta(s) seleccionada(s))" -ForegroundColor Cyan
+            Write-Host "`n   ($selectedCount carpeta(s) seleccionada(s))" -ForegroundColor Cyan
+        }
+
+        if ($hasOneDriveLocks) {
+            Write-Host "`n[ADVERTENCIA DE SEGURIDAD]" -ForegroundColor DarkYellow
+            Write-Host "No puedes reubicar carpetas controladas por Microsoft OneDrive." -ForegroundColor Gray
+            Write-Host "Pasos para desbloquearlas:" -ForegroundColor Gray
+            Write-Host " 1. Clic derecho en el icono de la nube de OneDrive (barra de tareas)." -ForegroundColor Gray
+            Write-Host " 2. Ve a 'Configuracion' -> 'Sincronizacion y copia de seguridad'." -ForegroundColor Gray
+            Write-Host " 3. Clic en 'Administrar copias de seguridad' y desactiva las carpetas deseadas." -ForegroundColor Gray
         }
 
         Write-Host "`n--- Acciones ---" -ForegroundColor Yellow
-        Write-Host "   [Numero] Marcar/Desmarcar        [T] Marcar Todas"
+        Write-Host "   [Numero] Marcar/Desmarcar        [T] Marcar Todas (Libres)"
         Write-Host "   [C] Continuar con la Reubicacion [N] Desmarcar Todas"
         Write-Host ""
         Write-Host "   [V] Cancelar y Volver" -ForegroundColor Red
@@ -2632,8 +2678,18 @@ function Move-UserProfileFolders {
 
         if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $folderItems.Count) {
             $index = [int]$choice - 1
-            $folderItems[$index].Selected = -not $folderItems[$index].Selected
-        } elseif ($choice.ToUpper() -eq 'T') { $folderItems.ForEach({$_.Selected = $true}) }
+            if ($folderItems[$index].IsLocked) {
+                [System.Console]::Beep(400, 200)
+                Write-Warning "Carpeta protegida por OneDrive. Sigue las instrucciones para desbloquearla."
+                Start-Sleep -Seconds 3
+            } else {
+                $folderItems[$index].Selected = -not $folderItems[$index].Selected
+            }
+        } 
+        elseif ($choice.ToUpper() -eq 'T') { 
+            # Marcar todas, excepto las bloqueadas
+            $folderItems | Where-Object { -not $_.IsLocked } | ForEach-Object { $_.Selected = $true } 
+        }
         elseif ($choice.ToUpper() -eq 'N') { $folderItems.ForEach({$_.Selected = $false}) }
         elseif ($choice.ToUpper() -notin @('C', 'V')) {
              Write-Warning "Opcion no valida." ; Start-Sleep -Seconds 1
@@ -2655,14 +2711,11 @@ function Move-UserProfileFolders {
 
     # --- CALCULO DE ESPACIO AUTOMATICO ---
     Clear-Host
-	Write-Host "`n[+] Calculando espacio necesario..." -ForegroundColor Yellow
+    Write-Host "`n[+] Calculando espacio necesario..." -ForegroundColor Yellow
     $totalRequiredBytes = 0
     foreach ($folder in $foldersToProcess) {
-        $regVal = $folderMappings[$folder.Name].RegValue
-        $pathRaw = (Get-ItemProperty -Path $registryPath -Name $regVal -ErrorAction SilentlyContinue).($regVal)
-        $pathExpanded = try { [Environment]::ExpandEnvironmentVariables($pathRaw) } catch { $pathRaw }
         try {
-            $size = (Get-ChildItem -Path $pathExpanded -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+            $size = (Get-ChildItem -Path $folder.Path -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
             $totalRequiredBytes += $size
         } catch {}
     }
@@ -2687,7 +2740,7 @@ function Move-UserProfileFolders {
     }
 
     # --- MENU DE ACCION ---
-	Write-Host "`n--- TIPO DE ACCION ---" -ForegroundColor Cyan
+    Write-Host "`n--- TIPO DE ACCION ---" -ForegroundColor Cyan
     Write-Host "   [1] Mover Archivos Y Actualizar Registro (Recomendado)"
     Write-Host "   [2] Solo Actualizar Registro (Si ya moviste archivos manualmente)"
     
@@ -2713,56 +2766,39 @@ function Move-UserProfileFolders {
     if ($verificationMode -eq 'Simulation') {
         Write-Host "`n[SIMULACION] Ejecutando Robocopy /L para previsualizar..." -ForegroundColor Cyan
         foreach ($folder in $foldersToProcess) {
-            $regName = $folderMappings[$folder.Name].RegValue
-            $currentPath = (Get-ItemProperty -Path $registryPath -Name $regName -ErrorAction SilentlyContinue).($regName)
-            $src = try { [Environment]::ExpandEnvironmentVariables($currentPath) } catch { $currentPath }
             $dest = Join-Path $newBasePath $folderMappings[$folder.Name].DefaultName
-            
-            Start-Process "robocopy.exe" -ArgumentList "`"$src`" `"$dest`" /L /E /NP /NJH /NJS" -Wait -PassThru -NoNewWindow
+            Start-Process "robocopy.exe" -ArgumentList "`"$($folder.Path)`" `"$dest`" /L /E /NP /NJH /NJS" -Wait -PassThru -NoNewWindow
         }
         Write-Host "`nSimulacion completada. Revisa la salida arriba." -ForegroundColor Yellow
-        if ((Read-Host "¿Deseas proceder con el movimiento REAL? (S/N)").ToUpper() -ne 'S') { return }
+        if ((Read-Host "Deseas proceder con el movimiento REAL? (S/N)").ToUpper() -ne 'S') { return }
         $verificationMode = 'None' 
     }
 
     Write-Host ""
-	Write-Warning "Cerrando aplicaciones y explorador..."
-    $confirmation = Read-Host "¿Confirmar inicio? (SI/NO)"
+    Write-Warning "Cerrando aplicaciones y explorador..."
+    $confirmation = Read-Host "Confirmar inicio? (SI/NO)"
     if ($confirmation -ne 'SI') { return }
 
     # --- [SEGURIDAD] CERRAR EXPLORER Y FORZAR VISIBILIDAD ---
     Write-Host "Cerrando el Explorador de Windows..." -ForegroundColor Yellow
     Stop-Process -Name "explorer" -Force -ErrorAction SilentlyContinue
-    
-    # Esperamos un momento para que el sistema reaccione al cierre
     Start-Sleep -Seconds 1
     
-    # --- [FIX CRÍTICO] FORZAR LA CONSOLA AL FRENTE (TOPMOST) ---
     try {
         $hWnd = [Win32ConsoleUtils]::GetConsoleWindow()
         if ($hWnd -ne [IntPtr]::Zero) {
-            # 1. Asegurar que no esté minimizada
             [Win32ConsoleUtils]::ShowWindow($hWnd, [Win32ConsoleUtils]::SW_RESTORE) 
-            
-            # 2. Forzar "Siempre visible" (TopMost) para que no se pierda tras el fondo
-            # HWND_TOPMOST (-1) coloca la ventana sobre todas las demás no-topmost
             [Win32ConsoleUtils]::SetWindowPos($hWnd, [Win32ConsoleUtils]::HWND_TOPMOST, 0, 0, 0, 0, ([Win32ConsoleUtils]::SWP_NOMOVE -bor [Win32ConsoleUtils]::SWP_NOSIZE -bor [Win32ConsoleUtils]::SWP_SHOWWINDOW)) | Out-Null
-            
-            # 3. Dar foco
             [Win32ConsoleUtils]::SetForegroundWindow($hWnd) | Out-Null
-            
         }
-    } catch {
-    }
+    } catch {}
 
     $globalSuccess = $true
     
     foreach ($op in $foldersToProcess) {
         $regName = $folderMappings[$op.Name].RegValue
-        $rawPath = (Get-ItemProperty -Path $registryPath -Name $regName -ErrorAction SilentlyContinue).($regName)
-        $srcPath = [Environment]::ExpandEnvironmentVariables($rawPath)
+        $srcPath = $op.Path
         
-        # Validación de existencia de origen
         if (-not (Test-Path $srcPath)) {
             Write-Warning "   [OMITIDO] La carpeta de origen no existe en disco: $srcPath"
             continue
@@ -2772,10 +2808,8 @@ function Move-UserProfileFolders {
 
         Write-Host "`nProcesando: $($op.Name)..." -ForegroundColor Cyan
 
-        # 1. Crear Directorio
         if (-not (Test-Path $destPath)) { New-Item -Path $destPath -ItemType Directory -Force | Out-Null }
 
-        # 2. Mover/Copiar
         $filesMoved = $true
         if ($actionType -eq 'MoveAndRegister') {
             $logDir = Join-Path (Split-Path -Parent $PSScriptRoot) "Logs"
@@ -2783,12 +2817,10 @@ function Move-UserProfileFolders {
             $logFile = Join-Path $logDir "Move_$($op.Name).log"
 
             if ($verificationMode -eq 'Hash') {
-                # MODO SEGURO: Copiar -> Verificar -> Borrar
                 Write-Host "   [HASH] Copiando archivos (Modo Seguro)..." -ForegroundColor Yellow
                 $args = @("`"$srcPath`"", "`"$destPath`"", "/MOVE", "/E", "/COPY:DAT", "/DCOPY:T", "/MT:8", "/J", "/R:2", "/W:2", "/NP", "/LOG:`"$logFile`"")
                 Start-Process "robocopy.exe" -ArgumentList $args -Wait -WindowStyle Hidden
                 
-                # Verificar Hash Manualmente (adaptado para renombres)
                 Write-Host "   [HASH] Verificando integridad..." -ForegroundColor Yellow
                 $hashError = $false
                 
@@ -2827,9 +2859,8 @@ function Move-UserProfileFolders {
                     $globalSuccess = $false
                 }
             } else {
-                # MODO ESTANDAR: Mover directo (/MOVE)
                 Write-Host "   [MOVE] Moviendo archivos..." -ForegroundColor Gray
-				$args = @("`"$srcPath`"", "`"$destPath`"", "/MOVE", "/E", "/COPY:DAT", "/DCOPY:T", "/MT:8", "/J", "/R:2", "/W:2", "/NP", "/LOG:`"$logFile`"")
+                $args = @("`"$srcPath`"", "`"$destPath`"", "/MOVE", "/E", "/COPY:DAT", "/DCOPY:T", "/MT:8", "/J", "/R:2", "/W:2", "/NP", "/LOG:`"$logFile`"")
                 $p = Start-Process "robocopy.exe" -ArgumentList $args -Wait -PassThru -WindowStyle Hidden
                 if ($p.ExitCode -ge 8) { 
                     Write-Error "   Error Robocopy (Cod $($p.ExitCode))."
@@ -2838,18 +2869,16 @@ function Move-UserProfileFolders {
                 }
             }
         } else {
-            # Solo registro: copiar desktop.ini
             $ini = Join-Path $srcPath "desktop.ini"
             if (Test-Path $ini) { Copy-Item $ini (Join-Path $destPath "desktop.ini") -Force -ErrorAction SilentlyContinue }
         }
 
-        # 3. Registro
+        # 3. Actualizar Registro
         if ($filesMoved) {
             try {
                 Set-ItemProperty -Path $registryPath -Name $regName -Value $destPath -Type ExpandString -Force
                 Write-Host "   Registro actualizado." -ForegroundColor Green
                 
-                # --- MAGIA DE ICONOS ---
                 $srcIni = Join-Path $srcPath "desktop.ini"
                 $destIni = Join-Path $destPath "desktop.ini"
                 if ((Test-Path $srcIni) -and (-not (Test-Path $destIni))) {
@@ -2857,7 +2886,6 @@ function Move-UserProfileFolders {
                 }
                 
                 if (Test-Path $destIni) { (Get-Item $destIni -Force).Attributes = 'Hidden', 'System' }
-                # CRITICO: La carpeta contenedora debe ser ReadOnly
                 (Get-Item $destPath -Force).Attributes = 'ReadOnly'
                 
                 Write-Log -LogLevel ACTION -Message "Registro actualizado para $($op.Name) -> $destPath"
@@ -2867,7 +2895,6 @@ function Move-UserProfileFolders {
         }
     }
 
-    # --- [SEGURIDAD] RESTAURAR EXPLORER ---
     Write-Host "`nRestaurando escritorio..." -ForegroundColor Yellow
     Start-Sleep -Seconds 1
     Invoke-ExplorerRestart
